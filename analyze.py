@@ -367,7 +367,7 @@ def main():
     verdict['reasons'].append(freq_note)
 
     print("=" * 65)
-    print(" RPi 5 TEMPERATURE & COOLER DECISION REPORT")
+    print(" THERMALSCOPE - TEMPERATURE & COOLER DECISION REPORT")
     print("=" * 65)
     print(f" Log File          : {log_file}")
     print(f" Total Samples     : {stats['count']}")

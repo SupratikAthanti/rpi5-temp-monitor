@@ -1,3 +1,24 @@
+# Python
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Generated data files
 *.csv
+temp_log.csv
+spikes.csv
+
+# Temporary state files
+/tmp/rpi5_temp_state_*
+/tmp/thermal-scope-collector.pid
+
+# macOS
 .DS_Store
+
+# Linux
+*~
+
+# Test logs
+*.log

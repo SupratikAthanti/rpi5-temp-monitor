@@ -14,6 +14,22 @@ if [[ "${1:-}" == "--dry-run" ]] || [[ "${2:-}" == "--dry-run" ]]; then
     DRY_RUN=true
 fi
 
+# File locking to prevent concurrent runs (PID-based)
+PID_FILE="/tmp/thermal-scope-collector.pid"
+if [[ -f "$PID_FILE" ]]; then
+    OLD_PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
+    if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "Another instance is already running (PID: $OLD_PID). Exiting." >&2
+        exit 1
+    else
+        # Stale PID file, remove it
+        rm -f "$PID_FILE"
+    fi
+fi
+echo $$ > "$PID_FILE"
+# Clean up PID file on exit
+trap 'rm -f "$PID_FILE"' EXIT
+
 # 1. Timestamp (ISO-8601 UTC)
 TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
@@ -35,6 +51,11 @@ fi
 # Test hook: allow deterministic temp injection without hardware
 if [[ -n "${FAKE_SOC_TEMP:-}" ]]; then
     SOC_TEMP="$FAKE_SOC_TEMP"
+fi
+
+# Test hook: simulate long-running process for locking tests
+if [[ -n "${TEST_SLEEP_SECONDS:-}" ]]; then
+    sleep "$TEST_SLEEP_SECONDS"
 fi
 
 # 3. PMIC Temperature (°C)
