@@ -167,6 +167,80 @@ def summarize_throttling(records):
     }
 
 
+def detect_culprit_app(detail):
+    """Map a process detail string to a known app name.
+
+    Detail may be 'comm|cpu|mem|args' (test hook) or the compact
+    'comm(cpu%|mem:x%|args);...' snapshot from collect.sh.
+    """
+    if not detail:
+        return 'unknown'
+    low = str(detail).lower()
+    for app in ('ollama', 'hermes', 'opencode', 'tailscaled', 'docker', 'apt'):
+        if app in low:
+            return app
+    # Fall back to first comm token before '|' or '('
+    token = str(detail).split('|')[0].split('(')[0].strip()
+    token = token.split(';')[0].strip()
+    return token if token else 'unknown'
+
+
+def parse_spikes_string(csv_text):
+    spikes = []
+    if not csv_text or not csv_text.strip():
+        return spikes
+    reader = csv.DictReader(csv_text.strip().splitlines())
+    for row in reader:
+        try:
+            spikes.append({
+                'timestamp': row.get('timestamp', ''),
+                'soc_temp': float(row.get('soc_temp_c', 0)),
+                'baseline': float(row.get('baseline_temp_c', 0)),
+                'delta': float(row.get('delta_c', 0)),
+                'load': float(row.get('load_1m', 0)),
+                'culprit_app': row.get('culprit_app', 'unknown') or 'unknown',
+                'detail': row.get('top_processes_detail', ''),
+            })
+        except (ValueError, KeyError, AttributeError):
+            continue
+    return spikes
+
+
+def parse_spikes_file(filepath):
+    if not filepath or not os.path.exists(filepath):
+        return []
+    with open(filepath, 'r', newline='') as f:
+        return parse_spikes_string(f.read())
+
+
+def group_spikes_by_app(spikes):
+    grouped = {}
+    for s in spikes:
+        app = s.get('culprit_app', 'unknown') or 'unknown'
+        entry = grouped.setdefault(app, {'count': 0, 'max_temp': 0.0, 'max_delta': 0.0})
+        entry['count'] += 1
+        entry['max_temp'] = max(entry['max_temp'], float(s.get('soc_temp', 0)))
+        entry['max_delta'] = max(entry['max_delta'], float(s.get('delta', 0)))
+    return grouped
+
+
+def frequency_weighted_note(spikes, total_samples):
+    if not spikes:
+        return ('No temperature spikes detected (no 5°C+ jumps over baseline). '
+                'Verdict below reflects steady-state temps only.')
+    total = max(int(total_samples or 0), 1)
+    pct = len(spikes) / total * 100
+    grouped = group_spikes_by_app(spikes)
+    top = sorted(grouped.items(), key=lambda kv: kv[1]['count'], reverse=True)
+    top_str = ', '.join(f'{app} ({info["count"]}x, peak {info["max_temp"]:.1f}°C)'
+                        for app, info in top[:3])
+    if pct < 1.0:
+        return (f'Spikes are rare: {len(spikes)} spikes in {total} samples ({pct:.2f}% of time). '
+                f'Culprits: {top_str}. Daily use is likely fine; heat is bursty/experimental.')
+    return (f'Spikes are frequent: {len(spikes)} spikes in {total} samples ({pct:.2f}% of time). '
+            f'Culprits: {top_str}. Heat recurs during normal use — cooling is warranted.')
+
+
 def determine_verdict(stats, throttle_summary, buckets):
     if not stats:
         return {
@@ -233,6 +307,13 @@ def main():
     proc_counter = Counter(r['top_proc'] for r in records)
     top_procs = proc_counter.most_common(5)
 
+    # Spike attribution (frequency-weighted context for the verdict)
+    spike_file = os.path.join(os.path.dirname(os.path.abspath(log_file)), 'spikes.csv')
+    spikes = parse_spikes_file(spike_file)
+    grouped = group_spikes_by_app(spikes)
+    freq_note = frequency_weighted_note(spikes, stats['count'])
+    verdict['reasons'].append(freq_note)
+
     print("=" * 65)
     print(" RPi 5 TEMPERATURE & COOLER DECISION REPORT")
     print("=" * 65)
@@ -266,6 +347,13 @@ def main():
     for proc, count in top_procs:
         pct_of_time = (count / stats['count']) * 100
         print(f"   {proc:<20} : {count:5d} samples ({pct_of_time:5.1f}%)")
+    print("-" * 65)
+    print(f" SPIKE ATTRIBUTION (5°C+ jumps, {len(spikes)} events):")
+    if spikes:
+        for app, info in sorted(grouped.items(), key=lambda kv: kv[1]['count'], reverse=True)[:5]:
+            print(f"   {app:<20} : {info['count']:5d} spikes (peak {info['max_temp']:.1f}°C, +{info['max_delta']:.1f}°C)")
+    else:
+        print("   No spikes recorded yet.")
     print("-" * 65)
     print(" FINAL VERDICT & RECOMMENDATION:")
     print(f"   => {verdict['decision']}")
