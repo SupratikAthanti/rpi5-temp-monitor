@@ -60,6 +60,10 @@ def calculate_stats(vals):
     else:
         median = (sorted_vals[n // 2 - 1] + sorted_vals[n // 2]) / 2.0
 
+    # Standard deviation
+    variance = sum((x - avg) ** 2 for x in vals) / n
+    std_dev = math.sqrt(variance)
+
     # 95th percentile
     p95_idx = int(math.ceil(0.95 * n)) - 1
     p95_idx = max(0, min(p95_idx, n - 1))
@@ -71,6 +75,7 @@ def calculate_stats(vals):
         'max': vmax,
         'avg': avg,
         'median': median,
+        'std_dev': std_dev,
         'p95': p95
     }
 
@@ -237,7 +242,7 @@ def main():
     print("-" * 65)
     print(" SoC TEMPERATURE STATS (°C):")
     print(f"   Min             : {stats['min']:.1f}°C")
-    print(f"   Average         : {stats['avg']:.1f}°C")
+    print(f"   Average         : {stats['avg']:.1f}°C (± {stats['std_dev']:.1f}°C std dev)")
     print(f"   Median          : {stats['median']:.1f}°C")
     print(f"   95th Percentile : {stats['p95']:.1f}°C")
     print(f"   Max             : {stats['max']:.1f}°C")
