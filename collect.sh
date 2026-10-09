@@ -21,7 +21,7 @@ TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 SOC_TEMP=""
 if command -v vcgencmd &>/dev/null; then
     # e.g., "temp=54.2'C" -> extract 54.2
-    SOC_TEMP="$(vcgencmd measure_temp 2>/dev/null | grep -oP '[0-9]+\.[0-9]+' || true)"
+    SOC_TEMP="$(vcgencmd measure_temp 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' || true)"
     if [[ -z "$SOC_TEMP" ]]; then
         SOC_TEMP="$(vcgencmd measure_temp 2>/dev/null | tr -cd '0-9.' || true)"
     fi
@@ -40,7 +40,7 @@ fi
 # 3. PMIC Temperature (°C)
 PMIC_TEMP="N/A"
 if command -v vcgencmd &>/dev/null; then
-    PMIC_TEMP="$(vcgencmd measure_temp pmic 2>/dev/null | grep -oP '[0-9]+\.[0-9]+' || true)"
+    PMIC_TEMP="$(vcgencmd measure_temp pmic 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' || true)"
     if [[ -z "$PMIC_TEMP" ]]; then
         PMIC_TEMP="$(vcgencmd measure_temp pmic 2>/dev/null | tr -cd '0-9.' || true)"
     fi
@@ -57,7 +57,7 @@ fi
 ARM_FREQ="0"
 if command -v vcgencmd &>/dev/null; then
     # e.g. "frequency(48)=2400000000" -> 2400
-    FREQ_HZ="$(vcgencmd measure_clock arm 2>/dev/null | grep -oP '[0-9]+$' || true)"
+    FREQ_HZ="$(vcgencmd measure_clock arm 2>/dev/null | grep -oE '[0-9]+$' || true)"
     if [[ -n "$FREQ_HZ" ]]; then
         ARM_FREQ="$(( FREQ_HZ / 1000000 ))"
     fi
@@ -115,7 +115,7 @@ echo "$CSV_LINE" >> "$LOG_FILE"
 #   SPIKE_COOLDOWN_SEC default 600 (max 1 snapshot per 10 min)
 #   SPIKE_EMA_ALPHA   default 0.15 (baseline adapts through the day)
 # Test hooks: FAKE_SOC_TEMP (above), FAKE_TOP_DETAIL ("comm|cpu|mem|args")
-SPIKE_STATE_FILE="${SPIKE_STATE_FILE:-/tmp/rpi5_temp_state}"
+SPIKE_STATE_FILE="${SPIKE_STATE_FILE:-/tmp/rpi5_temp_state_${UID:-0}}"
 SPIKE_LOG="${SPIKE_LOG:-$(dirname "$LOG_FILE")/spikes.csv}"
 SPIKE_DELTA="${SPIKE_DELTA:-5.0}"
 SPIKE_MIN_TEMP="${SPIKE_MIN_TEMP:-60.0}"
@@ -161,12 +161,16 @@ if [[ "$IS_HOT" == "1" && "$IS_JUMP" == "1" && "$COOLDOWN_OK" == "1" ]]; then
         echo "timestamp,soc_temp_c,baseline_temp_c,delta_c,load_1m,culprit_app,top_processes_detail" > "$SPIKE_LOG"
     fi
     echo "${TIMESTAMP},${SOC_TEMP},${BASELINE},${DELTA},${LOAD_1M},${CULPRIT},${TOP_DETAIL}" >> "$SPIKE_LOG"
-    # Freeze baseline during spike (don't let spike drag baseline up), record trigger time
-    echo "$BASELINE $NOW_EPOCH" > "$SPIKE_STATE_FILE"
+    # Freeze baseline during spike (don't let spike drag baseline up), record trigger time (atomic write)
+    _tmp_state="$(mktemp "$(dirname "$SPIKE_STATE_FILE")/state.XXXXXX")"
+    echo "$BASELINE $NOW_EPOCH" > "$_tmp_state"
+    mv "$_tmp_state" "$SPIKE_STATE_FILE"
 else
     # Normal sample: drift EMA baseline toward current temp (adapts through the day)
     BASELINE="$(awk -v c="$SOC_TEMP" -v b="$BASELINE" -v a="$SPIKE_EMA_ALPHA" 'BEGIN{printf "%.2f", a*(c+0)+(1-a)*(b+0)}')"
     STATE_DIR="$(dirname "$SPIKE_STATE_FILE")"
     mkdir -p "$STATE_DIR" 2>/dev/null || true
-    echo "$BASELINE $LAST_SPIKE" > "$SPIKE_STATE_FILE" 2>/dev/null || true
+    _tmp_state="$(mktemp "$STATE_DIR/state.XXXXXX")"
+    echo "$BASELINE $LAST_SPIKE" > "$_tmp_state"
+    mv "$_tmp_state" "$SPIKE_STATE_FILE"
 fi
