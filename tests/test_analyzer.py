@@ -180,6 +180,39 @@ class TestCSVParser(unittest.TestCase):
         self.assertEqual(records[1]['throttled_hex'], '0x80000')
         self.assertEqual(records[2]['soc_temp'], 85.1)
 
+    def test_parse_csv_header_only(self):
+        csv_data = """timestamp,soc_temp_c,pmic_temp_c,load_1m,arm_freq_mhz,throttled_hex,top_proc,top_cpu_pct
+"""
+        records = analyze.parse_csv_string(csv_data)
+        self.assertEqual(len(records), 0)
+
+    def test_parse_csv_empty(self):
+        records = analyze.parse_csv_string("")
+        self.assertEqual(len(records), 0)
+
+    def test_parse_csv_malformed_rows(self):
+        csv_data = """timestamp,soc_temp_c,pmic_temp_c,load_1m,arm_freq_mhz,throttled_hex,top_proc,top_cpu_pct
+2026-10-09T12:00:00Z,65.2,58.0,0.45,2400,0x0,python3,14.5
+invalid,data,here
+2026-10-09T12:02:00Z,85.1,72.4,3.80,1500,0x80004,ollama,98.2
+"""
+        records = analyze.parse_csv_string(csv_data)
+        # Should skip malformed row and return 2 valid records
+        self.assertEqual(len(records), 2)
+
+    def test_parse_csv_only_header(self):
+        csv_data = "timestamp,soc_temp_c,pmic_temp_c,load_1m,arm_freq_mhz,throttled_hex,top_proc,top_cpu_pct\n"
+        records = analyze.parse_csv_string(csv_data)
+        self.assertEqual(len(records), 0)
+
+    def test_parse_csv_with_n_a_pmic(self):
+        csv_data = """timestamp,soc_temp_c,pmic_temp_c,load_1m,arm_freq_mhz,throttled_hex,top_proc,top_cpu_pct
+2026-10-09T12:00:00Z,65.2,N/A,0.45,2400,0x0,python3,14.5
+"""
+        records = analyze.parse_csv_string(csv_data)
+        self.assertEqual(len(records), 1)
+        self.assertIsNone(records[0]['pmic_temp'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -47,5 +47,14 @@ else
     echo "PID file not found (already clean)"
 fi
 
+# Delete test lock file
+TEST_LOCK_FILE="/tmp/thermal-scope-test.lock"
+if [[ -f "$TEST_LOCK_FILE" ]]; then
+    echo "Removing test lock file ($TEST_LOCK_FILE)..."
+    rm "$TEST_LOCK_FILE"
+else
+    echo "Test lock file not found (already clean)"
+fi
+
 echo ""
 echo "Reset complete. ThermalScope will start fresh on next run."

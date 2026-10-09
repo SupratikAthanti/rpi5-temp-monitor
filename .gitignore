@@ -13,6 +13,7 @@ spikes.csv
 # Temporary state files
 /tmp/rpi5_temp_state_*
 /tmp/thermal-scope-collector.pid
+/tmp/thermal-scope-test.lock
 
 # macOS
 .DS_Store

@@ -34,6 +34,7 @@ Designed to answer the fundamental question: **Do I actually need a passive heat
 
 - `collect.sh` — The lightweight cron collector and spike detector.
 - `analyze.py` — The statistics calculator, spike parser, and cooler recommendation engine.
+- `run-test.sh` — Test runner with progress indicator for timed tests.
 - `reset.sh` — Clears all collected data and state files.
 - `stop.sh` — Removes ThermalScope from crontab.
 - `tests/` — Comprehensive unit and simulation test suite.
@@ -57,16 +58,34 @@ python3 analyze.py temp_log.csv
 ```
 
 ### 3. Run for 1 Hour (Recommended Test)
-Use tmux to run in the background (allows you to close the terminal):
+Use the test runner with progress indicator:
 ```bash
-tmux new -s thermal-test
-for i in {1..60}; do ./collect.sh temp_log.csv; sleep 60; done && python3 analyze.py temp_log.csv
-# Press Ctrl+B then D to detach and close terminal
+./run-test.sh 60
 ```
 
-To reattach and view results:
+This will:
+- Show real-time progress with time remaining
+- Display a progress bar
+- Automatically run the analysis when complete
+- Show the full report at the end
+
+**To check progress from another terminal:**
 ```bash
-tmux attach -s thermal-test
+./run-test.sh --progress
+```
+
+**To run in background with tmux:**
+```bash
+tmux new -s thermal-test
+./run-test.sh 60
+# Press Ctrl+B then D to detach
+```
+
+**Custom durations:**
+```bash
+./run-test.sh 30    # 30 minutes
+./run-test.sh 480   # 8 hours
+./run-test.sh 1440  # 24 hours
 ```
 
 ### 4. Run for 1 Week (Full Monitoring)
@@ -94,7 +113,16 @@ python3 analyze.py temp_log.csv
 
 **Note**: This automatically looks for `spikes.csv` in the same directory as `temp_log.csv` for spike attribution.
 
-### Stop the Hour-Long Test
+### Stop the Test
+If running with `run-test.sh`:
+```bash
+# Find the PID and kill it
+./run-test.sh --progress  # Shows PID
+kill <PID>
+
+# Or just press Ctrl+C if running in foreground
+```
+
 If running in tmux:
 ```bash
 tmux attach -s thermal-test
@@ -151,6 +179,48 @@ Key metrics to watch:
 
 ---
 
+## Common Errors & Solutions
+
+### Error: "Log file not found"
+**Cause**: You tried to run `analyze.py` before collecting any data.
+
+**Solution**: Run `./run-test.sh 60` for a 1-hour test, or manually collect data:
+```bash
+./collect.sh temp_log.csv
+./collect.sh temp_log.csv
+python3 analyze.py temp_log.csv
+```
+
+### Error: "No valid data in log file"
+**Cause**: The file exists but contains only the header or malformed data.
+
+**Solution**: Reset and start fresh:
+```bash
+./reset.sh
+./run-test.sh 60
+```
+
+### Error: "Another instance is already running"
+**Cause**: You tried to start a test while another test is already running.
+
+**Solution**: Check progress or stop the running test:
+```bash
+./run-test.sh --progress  # Shows PID and status
+kill <PID>               # Stop the running test
+```
+
+### Error: "Test Already Running" (run-test.sh)
+**Cause**: A test is already in progress.
+
+**Solution**: Check progress or stop it:
+```bash
+./run-test.sh --progress
+kill <PID>
+rm /tmp/thermal-scope-test.lock  # If process already stopped
+```
+
+---
+
 ## Edge Cases & Important Notes
 
 ### Reboot Behavior
@@ -163,6 +233,11 @@ Key metrics to watch:
 - If you try to run the script while another instance is running, it will exit with an error: "Another instance is already running (PID: XXXXX). Exiting."
 - This prevents data corruption from overlapping writes
 - The PID file is automatically cleaned up when the script exits
+
+### Stale Lock Files
+- If a test crashes or is killed abnormally, the lock file may remain
+- `run-test.sh` automatically detects and cleans up stale lock files
+- `reset.sh` also removes all lock files
 
 ### Partial Data Handling
 - If the system crashes during logging, the CSV may have incomplete lines
