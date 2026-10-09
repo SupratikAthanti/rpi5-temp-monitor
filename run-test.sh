@@ -43,10 +43,9 @@ if [[ "${1:-}" == "--progress" ]]; then
         echo "Status: Test completed or nearly complete"
     else
         LOCK_MINUTES=$((LOCK_REMAINING / 60))
-        LOCK_SECONDS=$((LOCK_REMAINING % 60))
         LOCK_PROGRESS=$(( (LOCK_ELAPSED * 100) / LOCK_TOTAL_SECONDS ))
-        echo "Time elapsed: $((LOCK_ELAPSED / 60))m $((LOCK_ELAPSED % 60))s"
-        echo "Time remaining: ${LOCK_MINUTES}m ${LOCK_SECONDS}s"
+        echo "Time elapsed: $((LOCK_ELAPSED / 60))m"
+        echo "Time remaining: ${LOCK_MINUTES}m"
         echo "Progress: ${LOCK_PROGRESS}%"
         echo ""
         # Progress bar
@@ -103,8 +102,7 @@ if [[ -f "$LOCK_FILE" ]]; then
 
             if [[ $LOCK_REMAINING -gt 0 ]]; then
                 LOCK_MINUTES=$((LOCK_REMAINING / 60))
-                LOCK_SECONDS=$((LOCK_REMAINING % 60))
-                echo "Time remaining: ${LOCK_MINUTES}m ${LOCK_SECONDS}s"
+                echo "Time remaining: ${LOCK_MINUTES}m"
             else
                 echo "Test should be completing soon..."
             fi
@@ -157,10 +155,9 @@ if [[ "${1:-}" == "--progress" ]]; then
         echo "Status: Test completed or nearly complete"
     else
         LOCK_MINUTES=$((LOCK_REMAINING / 60))
-        LOCK_SECONDS=$((LOCK_REMAINING % 60))
         LOCK_PROGRESS=$(( (LOCK_ELAPSED * 100) / LOCK_TOTAL_SECONDS ))
-        echo "Time elapsed: $((LOCK_ELAPSED / 60))m $((LOCK_ELAPSED % 60))s"
-        echo "Time remaining: ${LOCK_MINUTES}m ${LOCK_SECONDS}s"
+        echo "Time elapsed: $((LOCK_ELAPSED / 60))m"
+        echo "Time remaining: ${LOCK_MINUTES}m"
         echo "Progress: ${LOCK_PROGRESS}%"
         echo ""
         # Progress bar
@@ -205,11 +202,18 @@ for ((i=1; i<=DURATION_MINUTES; i++)); do
     REMAINING=$((TOTAL_SECONDS - ELAPSED))
     PROGRESS=$(( (ELAPSED * 100) / TOTAL_SECONDS ))
 
-    # Clear line and show progress
-    printf "\r[%3d%%] Elapsed: %dm %ds | Remaining: %dm %ds | Samples: %d" \
+    # Progress bar
+    BAR_WIDTH=40
+    FILLED=$(( (PROGRESS * BAR_WIDTH) / 100 ))
+    EMPTY=$((BAR_WIDTH - FILLED))
+
+    # Clear line and show progress on single line
+    printf "\r[%3d%%] [%s%s] Elapsed: %dm | Remaining: %dm | Samples: %d" \
         "$PROGRESS" \
-        "$((ELAPSED / 60))" "$((ELAPSED % 60))" \
-        "$((REMAINING / 60))" "$((REMAINING % 60))" \
+        "$(printf '%0.s=' $(seq 1 $FILLED))" \
+        "$(printf '%0.s-' $(seq 1 $EMPTY))" \
+        "$((ELAPSED / 60))" \
+        "$((REMAINING / 60))" \
         "$i"
 
     # Run collection
@@ -223,6 +227,7 @@ done
 
 # Clear the progress line
 printf "\r%-100s\r" " "
+printf "\n"
 
 echo ""
 echo "================================================================="
