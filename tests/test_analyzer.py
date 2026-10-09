@@ -69,6 +69,45 @@ class TestBucketing(unittest.TestCase):
         self.assertEqual(buckets['over_85']['count'], 1)
         self.assertAlmostEqual(buckets['under_60']['pct'], 2 / 6 * 100, places=1)
 
+    def test_frequency_buckets(self):
+        freqs = [2400, 2400, 1500, 1000, 750, 600, 0]
+        buckets = analyze.bucket_frequencies(freqs)
+        self.assertEqual(buckets['2400_mhz']['count'], 2)
+        self.assertEqual(buckets['1500_mhz']['count'], 1)
+        self.assertEqual(buckets['1000_mhz']['count'], 1)
+        self.assertEqual(buckets['750_mhz']['count'], 1)
+        self.assertEqual(buckets['600_mhz']['count'], 1)
+        self.assertEqual(buckets['other']['count'], 1)
+
+
+class TestPerformanceLoss(unittest.TestCase):
+    def test_performance_loss_full_speed(self):
+        freqs = [2400, 2400, 2400]
+        loss = analyze.calculate_performance_loss(freqs)
+        self.assertAlmostEqual(loss['performance_loss_pct'], 0.0, places=1)
+        self.assertAlmostEqual(loss['effective_speed_factor'], 1.0, places=2)
+
+    def test_performance_loss_half_speed(self):
+        freqs = [1200, 1200, 1200]
+        loss = analyze.calculate_performance_loss(freqs)
+        self.assertAlmostEqual(loss['performance_loss_pct'], 50.0, places=1)
+        self.assertAlmostEqual(loss['effective_speed_factor'], 0.5, places=2)
+
+    def test_performance_loss_mixed(self):
+        freqs = [2400, 1500, 1000]
+        loss = analyze.calculate_performance_loss(freqs)
+        avg = (2400 + 1500 + 1000) / 3
+        expected_loss = (1 - avg / 2400) * 100
+        self.assertAlmostEqual(loss['performance_loss_pct'], expected_loss, places=1)
+
+    def test_performance_loss_empty(self):
+        loss = analyze.calculate_performance_loss([])
+        self.assertIsNone(loss)
+
+    def test_performance_loss_zeros(self):
+        loss = analyze.calculate_performance_loss([0, 0, 0])
+        self.assertIsNone(loss)
+
 
 class TestVerdictDecisionMatrix(unittest.TestCase):
     def test_verdict_bare_board_fine(self):

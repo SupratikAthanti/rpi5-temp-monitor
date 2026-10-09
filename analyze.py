@@ -106,6 +106,54 @@ def bucket_temperatures(vals):
     }
 
 
+def bucket_frequencies(vals, max_freq=2400):
+    n = len(vals)
+    if n == 0:
+        return {
+            '2400_mhz': {'count': 0, 'pct': 0.0},
+            '1500_mhz': {'count': 0, 'pct': 0.0},
+            '1000_mhz': {'count': 0, 'pct': 0.0},
+            '750_mhz': {'count': 0, 'pct': 0.0},
+            '600_mhz': {'count': 0, 'pct': 0.0},
+            'other': {'count': 0, 'pct': 0.0},
+        }
+
+    c_2400 = sum(1 for v in vals if v >= 2300)
+    c_1500 = sum(1 for v in vals if 1400 <= v < 2300)
+    c_1000 = sum(1 for v in vals if 900 <= v < 1400)
+    c_750 = sum(1 for v in vals if 700 <= v < 900)
+    c_600 = sum(1 for v in vals if v < 700 and v > 0)
+    c_other = sum(1 for v in vals if v == 0)
+
+    return {
+        '2400_mhz': {'count': c_2400, 'pct': (c_2400 / n) * 100},
+        '1500_mhz': {'count': c_1500, 'pct': (c_1500 / n) * 100},
+        '1000_mhz': {'count': c_1000, 'pct': (c_1000 / n) * 100},
+        '750_mhz': {'count': c_750, 'pct': (c_750 / n) * 100},
+        '600_mhz': {'count': c_600, 'pct': (c_600 / n) * 100},
+        'other': {'count': c_other, 'pct': (c_other / n) * 100},
+    }
+
+
+def calculate_performance_loss(freq_vals, max_freq=2400):
+    if not freq_vals:
+        return None
+
+    valid_freqs = [f for f in freq_vals if f > 0]
+    if not valid_freqs:
+        return None
+
+    avg_freq = sum(valid_freqs) / len(valid_freqs)
+    performance_loss_pct = (1 - avg_freq / max_freq) * 100
+
+    return {
+        'avg_freq_mhz': avg_freq,
+        'max_freq_mhz': max_freq,
+        'performance_loss_pct': performance_loss_pct,
+        'effective_speed_factor': avg_freq / max_freq,
+    }
+
+
 def decode_throttled_bits(hex_str):
     try:
         val = int(hex_str, 16)
@@ -295,11 +343,15 @@ def main():
     soc_temps = [r['soc_temp'] for r in records]
     pmic_temps = [r['pmic_temp'] for r in records if r['pmic_temp'] is not None]
     loads = [r['load_1m'] for r in records]
+    arm_freqs = [r['arm_freq'] for r in records]
 
     stats = calculate_stats(soc_temps)
     pmic_stats = calculate_stats(pmic_temps) if pmic_temps else None
     load_stats = calculate_stats(loads)
+    freq_stats = calculate_stats(arm_freqs)
     buckets = bucket_temperatures(soc_temps)
+    freq_buckets = bucket_frequencies(arm_freqs)
+    perf_loss = calculate_performance_loss(arm_freqs)
     throttle_summary = summarize_throttling(records)
     verdict = determine_verdict(stats, throttle_summary, buckets)
 
@@ -330,6 +382,7 @@ def main():
     if pmic_stats:
         print(f" PMIC TEMP (Avg)   : {pmic_stats['avg']:.1f}°C (Max: {pmic_stats['max']:.1f}°C)")
     print(f" CPU LOAD (1m Avg) : {load_stats['avg']:.2f} (Max: {load_stats['max']:.2f})")
+    print(f" ARM FREQUENCY (Avg): {freq_stats['avg']:.0f} MHz (Max: {freq_stats['max']:.0f} MHz)")
     print("-" * 65)
     print(" TEMPERATURE DISTRIBUTION:")
     for b_name, b_info in [
@@ -342,6 +395,28 @@ def main():
         bar_len = int(b_info['pct'] / 2)
         bar = '#' * bar_len
         print(f"   {b_name:<35} : {b_info['count']:5d} ({b_info['pct']:5.2f}%) {bar}")
+    print("-" * 65)
+    print(" ARM FREQUENCY DISTRIBUTION:")
+    for b_name, b_info in [
+        ("2400 MHz (Max)", freq_buckets['2400_mhz']),
+        ("1500 MHz (Throttled)", freq_buckets['1500_mhz']),
+        ("1000 MHz (Throttled)", freq_buckets['1000_mhz']),
+        ("750 MHz (Throttled)", freq_buckets['750_mhz']),
+        ("600 MHz (Min)", freq_buckets['600_mhz']),
+        ("Other/Unknown", freq_buckets['other'])
+    ]:
+        bar_len = int(b_info['pct'] / 2)
+        bar = '#' * bar_len
+        print(f"   {b_name:<30} : {b_info['count']:5d} ({b_info['pct']:5.2f}%) {bar}")
+    print("-" * 65)
+    print(" PERFORMANCE IMPACT ANALYSIS:")
+    if perf_loss:
+        print(f"   Average Frequency    : {perf_loss['avg_freq_mhz']:.0f} MHz / {perf_loss['max_freq_mhz']:.0f} MHz max")
+        print(f"   Performance Loss    : {perf_loss['performance_loss_pct']:.1f}% slower than max capability")
+        print(f"   Effective Speed     : {perf_loss['effective_speed_factor']:.1%} of maximum")
+        print(f"   Time Impact         : For a 1-hour task, thermal throttling added ~{60 * (1 / perf_loss['effective_speed_factor'] - 1):.0f} minutes")
+    else:
+        print("   Insufficient frequency data for analysis.")
     print("-" * 65)
     print(" TOP PROCESSES (Most frequently observed top CPU consumer):")
     for proc, count in top_procs:
