@@ -10,6 +10,7 @@ required.
 """
 
 import os
+import subprocess
 import sys
 import time
 
@@ -60,6 +61,25 @@ def _fmt(value, default='—'):
     return default if value in (None, '') else str(value)
 
 
+def _sparkline(values, width=12):
+    """Tiny unicode bar sparkline for the Overview trend row."""
+    bars = '▁▂▃▄▅▆▇█'
+    nums = []
+    for v in (values or []):
+        try:
+            nums.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    if not nums:
+        return bars[0] * width
+    lo, hi = min(nums), max(nums)
+    if hi == lo:
+        return bars[4] * width
+    step = max(1, len(nums) // width)
+    picked = nums[::step][:width]
+    return ''.join(bars[min(7, int((v - lo) / (hi - lo) * 7))] for v in picked)
+
+
 def build_tab_rows(tab, ctx=None):
     """Return the selectable rows for one tab.
 
@@ -74,21 +94,29 @@ def build_tab_rows(tab, ctx=None):
     if tab == 'Overview':
         add(_row('overview.status', 'OVERVIEW',
                  'Mode: ' + _fmt(c.get('mode'), 'both') +
-                 '  ·  Render: ' + _fmt(c.get('render_interval_s'), '1 s'),
+                 '  ·  Render: ' + _fmt(c.get('render_interval_s'), '1 s') +
+                 '  ·  Session: ' + _fmt(c.get('session_time'), '00:00:00'),
                  'section'))
         add(_row('overview.temp', 'Temperature',
                  'SoC ' + _fmt(c.get('soc_temp'), '—') +
                  ' °C  ·  p95 (1 h) ' + _fmt(c.get('p95_temp'), '—') + ' °C'))
         add(_row('overview.power', 'Power',
                  'PMIC ' + _fmt(c.get('pmic_w'), '—') +
-                 ' W  ·  wall est. ' + _fmt(c.get('wall_w'), '—') + ' W'))
-        add(_row('overview.cost', 'Cost / Battery',
+                 ' W  ·  wall est. ' + _fmt(c.get('wall_w'), '—') +
+                 ' W  ·  Energy 1 h ' + _fmt(c.get('energy_1h'), '—') + ' Wh'))
+        add(_row('overview.cost', 'Cost / Battery / Cron',
                  'Cost today ' + _fmt(c.get('cost'), '$0.000') +
                  '  ·  Battery ' + _fmt(c.get('battery_wh'), '45') +
-                 ' Wh → ~' + _fmt(c.get('battery_hours'), '8.3') + ' h'))
+                 ' Wh → ~' + _fmt(c.get('battery_hours'), '8.3') +
+                 ' h  ·  Cron: ' + _fmt(c.get('cron_status'), 'STOPPED')))
+        add(_row('overview.sparkline', 'Trend',
+                 'temp  ' + _fmt(c.get('temp_spark'), '▁▂▃▅▇█▇▆▅▃▂') +
+                 '     watt  ' + _fmt(c.get('watt_spark'), '▂▃▅▆█▇▆▅▃▂▁')))
         add(_row('overview.verdict', 'FINAL VERDICT',
-                 'VERDICT: ' + _fmt(c.get('verdict'), 'No Cooler Needed'),
-                 'section'))
+                 'VERDICT: ' + _fmt(c.get('verdict'), 'No Cooler Needed') +
+                 '  ·  max ' + _fmt(c.get('max'), '—') + ' °C  ·  ' +
+                 _fmt(c.get('active_throttles'), '0') + ' throttles  ·  ' +
+                 _fmt(c.get('spike_count'), '0') + ' spikes', 'section'))
         add(_row('overview.span', 'Log span',
                  'Log span: ' + _fmt(c.get('span'), '—') +
                  '  ·  Samples: ' + _fmt(c.get('samples'), '0')))
@@ -204,6 +232,7 @@ def build_tab_rows(tab, ctx=None):
         add(_row('bat.energy', 'ENERGY', 'ENERGY', 'section'))
         add(_row('bat.energy.detail', 'Energy',
                  'Energy 1 h: ' + _fmt(c.get('energy_1h'), '—') +
+                 ' Wh   2 h: ' + _fmt(c.get('energy_2h'), '—') +
                  ' Wh   full log: ' + _fmt(c.get('energy_full'), '—') + ' Wh'))
         add(_row('bat.cost', 'COST', 'COST', 'section'))
         add(_row('bat.cost.detail', 'Cost',
@@ -227,6 +256,9 @@ def build_tab_rows(tab, ctx=None):
                                 if _config else '—'))
             add(_row('config.' + key, key,
                      f'{key:<22}: [ {_fmt(value)} ]'))
+        add(_row('config.cron.status', 'Cron status',
+                 'Cron status: ' + _fmt(c.get('cron_status'), 'STOPPED') +
+                 '  → /cron stop to disable', 'section'))
         return rows
 
     return []
@@ -297,6 +329,83 @@ def cancel_edit(state):
 
 
 # ---------------------------------------------------------------------------
+# Rich detail overlays (see EXPECTED_API.md §10)
+# ---------------------------------------------------------------------------
+
+def _parse_spike_detail(detail):
+    """Parse ``comm(cpu%|mem:x%|args);...`` into process snapshot dicts."""
+    entries = []
+    for chunk in str(detail or '').split(';'):
+        chunk = chunk.strip()
+        if not chunk or '(' not in chunk:
+            continue
+        comm, rest = chunk.split('(', 1)
+        fields = rest.rstrip(')').split('|')
+
+        def _numeric(text):
+            text = str(text or '').strip()
+            try:
+                return float(text)
+            except (TypeError, ValueError):
+                return text
+
+        cpu = _numeric(fields[0].strip().rstrip('%')) if fields else ''
+        mem = ''
+        if len(fields) > 1:
+            token = fields[1].strip()
+            if token.lower().startswith('mem:'):
+                token = token[4:]
+            mem = _numeric(token.rstrip('%'))
+        args = '|'.join(fields[2:]).strip() if len(fields) > 2 else ''
+        entries.append({'comm': comm.strip(), 'cpu_pct': cpu,
+                        'mem_pct': mem, 'args': args})
+    return entries
+
+
+def _provenance(row, ctx):
+    """Point at the sample that produced a row's value (plus its raw line)."""
+    records = (ctx or {}).get('records') or []
+    raw_lines = (ctx or {}).get('raw_lines') or []
+    count = len(records)
+    idx = 0
+    if count:
+        row_id = str((row or {}).get('id', ''))
+        if row_id == 'temp.min':
+            idx = min(range(count), key=lambda i: float(
+                records[i].get('soc_temp') or 0))
+        elif row_id == 'temp.max':
+            idx = max(range(count), key=lambda i: float(
+                records[i].get('soc_temp') or 0))
+        else:
+            idx = count - 1  # aggregates resolve to the most recent sample
+        idx = max(0, min(count - 1, idx))
+    raw_line = raw_lines[min(idx, len(raw_lines) - 1)] if raw_lines else ''
+    timestamp = str(records[idx].get('timestamp', '')) if count else ''
+    return {'sample_index': idx, 'timestamp': timestamp, 'raw_line': raw_line}
+
+
+def build_detail(row, tab, ctx=None):
+    """Build the structured ``Enter`` overlay for a selectable row."""
+    row = row or {}
+    label = str(row.get('label') or '')
+    title = label or (f'{tab} detail' if tab else 'PiScope detail')
+    value = str(row.get('text', ''))
+
+    snapshot = None
+    if str(row.get('id', '')).startswith('perf.spike'):
+        snapshot = []
+        for spike in (ctx or {}).get('spikes') or []:
+            snapshot.extend(_parse_spike_detail(spike.get('detail')))
+
+    return {
+        'title': title,
+        'value': value,
+        'provenance': _provenance(row, ctx),
+        'spike_snapshot': snapshot,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Context gathering (shared by the interactive frontend and detail overlays)
 # ---------------------------------------------------------------------------
 
@@ -326,9 +435,19 @@ def build_context(config=None):
         import analyze
         import power_read
 
-        records = analyze.parse_csv_file(_first_log())
+        log_path = _first_log()
+        records = analyze.parse_csv_file(log_path)
+        # Detail overlays need the producing samples and their raw CSV lines.
+        ctx['records'] = records
+        try:
+            with open(log_path, 'r', newline='') as f:
+                ctx['raw_lines'] = [line for line in f.read().splitlines()[1:]
+                                    if line.strip()]
+        except OSError:
+            ctx['raw_lines'] = []
         if records:
             temps = [r['soc_temp'] for r in records]
+            ctx['temp_spark'] = _sparkline(temps)
             stats = analyze.calculate_stats(temps) or {}
             ctx.update({
                 'samples': stats.get('count', 0),
@@ -382,18 +501,23 @@ def build_context(config=None):
         ctx['wall_factor'] = cfg.get('wall_factor', 1.0)
         ctx['rate'] = cfg.get('rate_per_kwh', 0.15)
         ctx['battery_wh'] = cfg.get('battery_wh', 45.0)
+        ctx['cron_status'] = os.environ.get('PISCOPE_CRON_STATUS', 'STOPPED')
         if precords:
             ctx['energy_full'] = f"{analyze.energy_wh(precords):.2f}"
             wall_w = [r['wall_w'] for r in precords]
+            ctx['watt_spark'] = _sparkline(wall_w)
             wstats = analyze.calculate_stats(wall_w)
             estimate = analyze.battery_estimate(
                 cfg.get('battery_wh', 45.0), wstats['avg'], wstats['p95'])
             ctx['energy_1h'] = f"{analyze.energy_wh(precords, 60):.2f}"
+            ctx['energy_2h'] = f"{analyze.energy_wh(precords, 120):.2f}"
+            ctx['battery_hours'] = f"{estimate['avg_hours']:.1f}"
             ctx['cost'] = f"${analyze.cost_dollars(analyze.energy_wh(precords), cfg.get('rate_per_kwh', 0.15)):.5f}"
             ctx['avg_hours'] = f"{estimate['avg_hours']:.1f}"
             ctx['conservative_hours'] = f"{estimate['conservative_hours']:.1f}"
         spikes = analyze.parse_spikes_file(
-            os.path.join(os.path.dirname(_first_log()), 'spikes.csv'))
+            os.path.join(os.path.dirname(log_path), 'spikes.csv'))
+        ctx['spikes'] = spikes
         ctx['spike_count'] = len(spikes)
         ctx['spike_note'] = analyze.frequency_weighted_note(spikes, len(records))
     except Exception:
@@ -405,53 +529,93 @@ def build_context(config=None):
 # Interactive curses frontend (stdlib only)
 # ---------------------------------------------------------------------------
 
+def _command_context(state, cfg):
+    """Build the injected context used by the real TUI command handler.
+
+    Every collaborator is the real (stdlib) implementation here; the headless
+    ``execute_command`` tests inject fakes instead, so no test ever spawns a
+    real process or edits a real crontab.
+    """
+    cfgmod = _config
+    data_dir = (os.environ.get('PISCOPE_DATA_DIR') or
+                os.path.dirname(DEFAULT_TEMP_LOG))
+
+    def confirm(prompt):
+        # Two-step confirmation keeps /reset from ever being destructive by
+        # accident while still allowing the real TUI to clear the logs.
+        if not state.get('confirm_reset'):
+            state['confirm_reset'] = True
+            return False
+        state.pop('confirm_reset', None)
+        return True
+
+    def spawner(argv, **kwargs):
+        return subprocess.Popen(
+            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+
+    def crontab_runner(argv, input=None, **kwargs):
+        return subprocess.run(argv, input=input, capture_output=True,
+                              text=True, timeout=10)
+
+    def report_fn(**kwargs):
+        import analyze
+        power = os.environ.get('PISCOPE_POWER_LOG') or DEFAULT_POWER_LOG
+        if not os.path.exists(power):
+            power = None
+        return analyze.build_report(_first_log(), power_log_file=power,
+                                    **kwargs)
+
+    return {
+        'dir': data_dir,
+        'config': cfg,
+        'config_path': cfgmod.config_path() if cfgmod else None,
+        'scripts': os.path.dirname(os.path.abspath(__file__)),
+        'state': state,
+        'confirm': confirm,
+        'process_spawner': spawner,
+        'crontab_runner': crontab_runner,
+        'report_fn': report_fn,
+    }
+
+
 def _command_action(command, state, cfg):
-    """Apply a parsed command to the mutable TUI state; return status text."""
+    """Execute a parsed command through ``execute_command``; return status text."""
     if not command or not command.get('valid'):
         return command.get('error', 'Invalid command') if command else 'Invalid command'
-    name, args = command['name'], command['args']
-    if name == '/help':
-        return 'Commands: ' + ', '.join(c['name'] for c in (_commands.COMMANDS if _commands else []))
-    if name == '/quit':
-        state['quit'] = True
-        return 'Exiting PiScope...'
-    if name == '/pause':
-        state['paused'] = True
-        return 'Rendering paused'
-    if name == '/resume':
-        state['paused'] = False
-        return 'Rendering resumed'
+    if _commands is None or not hasattr(_commands, 'execute_command'):
+        return command.get('name', 'Unknown command')
+
+    result = _commands.execute_command(command, _command_context(state, cfg))
+    if not result.get('ok'):
+        return result.get('status') or 'Command failed'
+
+    updated = result.get('config')
+    if isinstance(updated, dict):
+        cfg.update(updated)
+
+    name = command.get('name')
+    report = result.get('report')
+    if isinstance(report, str):
+        state['report'] = report
+        state['detail'] = {
+            'title': 'Report' + (f" ({result.get('range_spec')})"
+                                 if result.get('range_spec') else ''),
+            'value': report[:400],
+            'provenance': {'sample_index': 0, 'timestamp': '', 'raw_line': ''},
+            'spike_snapshot': None,
+        }
+    if name == '/decision':
+        state['detail'] = {
+            'title': 'Verdict',
+            'value': build_context(cfg).get('verdict', 'No Cooler Needed'),
+            'provenance': {'sample_index': 0, 'timestamp': '', 'raw_line': ''},
+            'spike_snapshot': None,
+        }
     if name == '/config':
         state['tab_index'] = TABS.index('Config')
         state['index'] = state['scroll'] = 0
-        setting = _commands.parse_config_set(args) if _commands else None
-        if setting and _config:
-            try:
-                updated = _config.set_config_value(
-                    _config.load_config(), setting['key'], setting['value'])
-                _config.save_config(updated)
-                return f"Set {setting['key']} = {updated[setting['key']]}"
-            except ValueError as exc:
-                return str(exc)
-        return 'Config tab'
-    if name == '/mode' and _config:
-        updated = _config.set_config_value(_config.load_config(), 'mode', args[0])
-        _config.save_config(updated)
-        return f'Mode = {updated["mode"]}'
-    if name == '/decision':
-        state['detail'] = build_context(cfg).get('verdict', 'No Cooler Needed')
-        return 'Verdict shown'
-    if name == '/report':
-        return 'Report: use "piscope view" in another terminal'
-    if name == '/reset':
-        return 'Reset: run ./reset.sh from the shell'
-    if name == '/test':
-        return f'Test {args[0]} min: run ./run-test.sh {args[0]}'
-    if name == '/range':
-        return f'Range: {args[0] if args else "full log"}'
-    if name == '/cron':
-        return f'Cron {args[0] if args else "status"}: manage with setup-cron.sh / stop.sh'
-    return name
+    return result.get('status', '')
 
 
 def _render(stdscr, state, rows, cfg, filtered=None, status=''):
@@ -497,6 +661,24 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
         for i, cmd in enumerate(filtered[:4]):
             put(base + 1 + i, '   ' + cmd['name'] + '  ' + cmd['description'])
 
+    detail = state.get('detail')
+    if isinstance(detail, dict):
+        prov = detail.get('provenance') or {}
+        lines = [
+            ' DETAIL: ' + str(detail.get('title', '')),
+            '   ' + str(detail.get('value', '')),
+            f"   sample #{prov.get('sample_index', '?')} "
+            f"@ {prov.get('timestamp', '')}",
+            '   raw: ' + str(prov.get('raw_line', '')),
+        ]
+        for proc in (detail.get('spike_snapshot') or [])[:6]:
+            lines.append('   process: {comm} cpu={cpu}% mem={mem}% {args}'.format(
+                comm=proc.get('comm', ''), cpu=proc.get('cpu_pct', ''),
+                mem=proc.get('mem_pct', ''), args=proc.get('args', '')))
+        base = max(2, height - 4 - len(lines))
+        for i, line in enumerate(lines):
+            put(base + i, line[:max(0, width - 1)])
+
     if state.get('editing'):
         bar = f" piscope › edit [{state.get('buffer', '')}]  Enter save · Esc cancel"
     else:
@@ -515,6 +697,31 @@ except Exception:  # pragma: no cover
     _curses_A_REVERSE = None
 
 
+def _persist_sample(cfg):
+    """Periodically persist one sample through collect.sh's shared PID lock.
+
+    ``--skip-if-locked`` makes this a no-op whenever the background cron
+    collector is already writing, so the TUI never creates duplicate rows.
+    """
+    collector = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             'collect.sh')
+    if not os.path.exists(collector):
+        return
+    argv = [collector, '--skip-if-locked']
+    mode = cfg.get('mode')
+    if mode:
+        argv += ['--mode', str(mode)]
+    argv.append(_first_log())
+    env = dict(os.environ)
+    env.setdefault('PISCOPE_POWER_LOG', DEFAULT_POWER_LOG)
+    try:
+        subprocess.Popen(
+            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, env=env)
+    except OSError:
+        pass
+
+
 def _tui_loop(stdscr, cfg):
     try:
         _curses.curs_set(0)
@@ -531,13 +738,22 @@ def _tui_loop(stdscr, cfg):
     status = ''
     filtered = None
     last_ctx_time = 0.0
+    last_log_time = time.monotonic()
+    started = last_log_time
     ctx = {}
 
     while not state['quit']:
         now = time.monotonic()
+        elapsed = int(now - started)
+        state['session_time'] = (
+            f'{elapsed // 3600:02d}:{(elapsed % 3600) // 60:02d}:'
+            f'{elapsed % 60:02d}')
         if now - last_ctx_time >= float(cfg.get('sample_interval_s', 1.0)):
             ctx = build_context(cfg)
             last_ctx_time = now
+        if now - last_log_time >= float(cfg.get('log_cadence_s', 60)):
+            _persist_sample(cfg)
+            last_log_time = now
         rows = build_tab_rows(TABS[state['tab_index']], ctx)
         state['index'], state['scroll'] = move_selection(
             rows, state['index'], state['scroll'],
@@ -619,7 +835,8 @@ def _tui_loop(stdscr, cfg):
             state['palette'] = True
             state['buffer'] = ''
             state['cmd_index'] = 0
-        elif key in (_curses.KEY_LEFT, 9):  # left arrow / Tab
+        elif key in (_curses.KEY_LEFT, 9, getattr(_curses, 'KEY_BTAB', -1)):
+            # left arrow / Tab / Shift+Tab
             state['tab_index'] = (state['tab_index'] - 1) % len(TABS)
             state['index'] = state['scroll'] = 0
         elif key in (_curses.KEY_RIGHT,):
@@ -663,7 +880,8 @@ def _tui_loop(stdscr, cfg):
                     state['editing'] = True
                     state['buffer'] = ''
                 elif action == 'detail':
-                    state['detail'] = rows[state['index']]['text']
+                    state['detail'] = build_detail(
+                        rows[state['index']], TABS[state['tab_index']], ctx)
         elif key in (27,):
             status = 'Esc: command bar focused (type ? for help)'
         elif key in (ord('q'),):

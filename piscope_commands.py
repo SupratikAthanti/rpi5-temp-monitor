@@ -1,8 +1,13 @@
-"""Pure command-palette parsing for the PiScope TUI.
+"""Pure command-palette parsing (and headless execution) for the PiScope TUI.
 
 No TUI / textual dependency: all helpers are plain functions over strings and
 dicts so they can be unit-tested (and reused by the curses frontend) directly.
+``execute_command`` performs the *real* side effects of a command through an
+injected context, so tests never touch a real crontab, process or home config.
 """
+
+import os
+import subprocess
 
 COMMANDS = [
     {'name': '/help', 'description': 'Show the list of available commands'},
@@ -119,3 +124,210 @@ def parse_config_set(args):
     if not key or not value:
         return None
     return {'key': key, 'value': value}
+
+
+# ---------------------------------------------------------------------------
+# Command execution (see EXPECTED_API.md §9)
+# ---------------------------------------------------------------------------
+
+def _exec_result(ok, status, effects=None, **extra):
+    out = {
+        'ok': bool(ok),
+        'status': str(status or ''),
+        'effects': list(effects or []),
+    }
+    out.update(extra)
+    return out
+
+
+def _scripts_dir(context):
+    return str(context.get('scripts') or os.path.dirname(os.path.abspath(__file__)))
+
+
+def _data_dir(context):
+    return str(context.get('dir') or os.getcwd())
+
+
+def _as_text(stdout):
+    if stdout is None:
+        return ''
+    if isinstance(stdout, bytes):
+        return stdout.decode('utf-8', 'replace')
+    return str(stdout)
+
+
+def _default_spawner(argv, **kwargs):
+    """Non-blocking fallback launcher (never waits for the child)."""
+    return subprocess.Popen(
+        argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)
+
+
+def _default_crontab_runner(argv, input=None, **kwargs):
+    return subprocess.run(argv, input=input, capture_output=True,
+                          text=True, timeout=10)
+
+
+def _collector_line(scripts, data_dir):
+    return ('* * * * * ' + os.path.join(scripts, 'collect.sh') +
+            ' --mode both ' + os.path.join(data_dir, 'temp_log.csv'))
+
+
+def _is_collector_line(line):
+    return 'collect.sh' in str(line)
+
+
+def _read_crontab(runner):
+    proc = runner(['crontab', '-l'], input=None)
+    return _as_text(getattr(proc, 'stdout', ''))
+
+
+def _write_crontab(runner, text):
+    return runner(['crontab', '-'], input=text)
+
+
+def _default_report_fn(data_dir):
+    """Fallback report builder bound to the injected data directory."""
+    def build(**kwargs):
+        import analyze
+        log = os.path.join(data_dir, 'temp_log.csv')
+        power = os.path.join(data_dir, 'power_log.csv')
+        if not os.path.exists(power):
+            power = None
+        return analyze.build_report(log, power_log_file=power, **kwargs)
+    return build
+
+
+def execute_command(cmd, context):
+    """Carry out a parsed command (or raw command string) with injected effects.
+
+    ``context`` supplies every side-effecting collaborator; see the module-level
+    docstring / EXPECTED_API.md §9 for the exact keys.  The return value always
+    has ``ok``, ``status`` and ``effects`` plus command-specific keys.
+    """
+    context = dict(context or {})
+    command = cmd if isinstance(cmd, dict) else parse_command(cmd)
+    if not command or not command.get('valid'):
+        error = command.get('error') if isinstance(command, dict) else str(command)
+        return _exec_result(False, error or 'Invalid command', [])
+
+    name, args = command.get('name'), list(command.get('args') or [])
+    state = context.get('state')
+    if state is None:
+        state = {}
+        context['state'] = state
+
+    if name == '/test':
+        minutes = int(args[0])
+        spawner = context.get('process_spawner') or _default_spawner
+        argv = [os.path.join(_scripts_dir(context), 'run-test.sh'), str(minutes)]
+        mode = (context.get('config') or {}).get('mode')
+        if mode:
+            argv += ['--mode', str(mode)]
+        spawner(argv)
+        return _exec_result(True, f'Test {minutes} min started',
+                       ['test_started'], minutes=minutes)
+
+    if name == '/reset':
+        confirm = context.get('confirm')
+        if confirm is None:
+            confirm = lambda prompt: False  # never destructive by default
+        if not confirm('Delete all collected data and start fresh? [y/N] '):
+            return _exec_result(True, 'Reset cancelled', ['reset_cancelled'])
+
+        data_dir = _data_dir(context)
+        removed = []
+        for filename in ('temp_log.csv', 'power_log.csv', 'spikes.csv',
+                         'collector.pid', 'spike_state'):
+            path = os.path.join(data_dir, filename)
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                    removed.append(filename)
+                except OSError:
+                    pass
+        return _exec_result(True, 'Collected data cleared', ['logs_cleared'],
+                       removed=removed)
+
+    if name in ('/report', '/range'):
+        report_fn = context.get('report_fn') or _default_report_fn(
+            _data_dir(context))
+        if name == '/report':
+            report = report_fn()
+            return _exec_result(True, 'Full report shown', ['report_shown'],
+                           report=report, scrollable=False)
+        spec = args[0] if args else ''
+        report = report_fn(range_spec=spec)
+        return _exec_result(True, f'Report for {spec}', ['range_report_shown'],
+                       report=report, scrollable=True, range_spec=spec)
+
+    if name == '/cron':
+        runner = context.get('crontab_runner') or _default_crontab_runner
+        action = args[0] if args else 'status'
+        text = _read_crontab(runner)
+        lines = text.splitlines()
+
+        if action == 'status':
+            running = any(_is_collector_line(line) for line in lines)
+            status = ('Cron: RUNNING (background collector installed)'
+                      if running else
+                      'Cron: STOPPED (no background collector)')
+            return _exec_result(True, status, ['cron_status'],
+                           cron_running=running)
+
+        if action == 'start':
+            if not any(_is_collector_line(line) for line in lines):
+                lines.append(_collector_line(_scripts_dir(context),
+                                             _data_dir(context)))
+                _write_crontab(runner, '\n'.join(lines) + '\n')
+            return _exec_result(True, 'Cron collector started', ['cron_started'])
+
+        # stop
+        kept = [line for line in lines if not _is_collector_line(line)]
+        _write_crontab(runner, '\n'.join(kept) + '\n')
+        return _exec_result(True, 'Cron collector stopped', ['cron_stopped'])
+
+    if name in ('/mode', '/config') and (
+            name == '/mode' or (args and args[0].lower() == 'set')):
+        import piscope_config as cfgmod
+        config = context.get('config')
+        if not isinstance(config, dict):
+            config = cfgmod.load_config()
+            context['config'] = config
+        path = context.get('config_path') or cfgmod.config_path()
+        try:
+            if name == '/mode':
+                updated = cfgmod.set_config_value(config, 'mode', args[0])
+                status = f'Mode = {updated["mode"]}'
+                effect = 'mode_changed'
+            else:
+                setting = parse_config_set(args)
+                if setting is None:
+                    return _exec_result(False, 'Use: /config set <key> <value>', [])
+                updated = cfgmod.set_config_value(
+                    config, setting['key'], setting['value'])
+                status = f'Set {setting["key"]} = {updated[setting["key"]]}'
+                effect = 'config_changed'
+        except ValueError as exc:
+            return _exec_result(False, str(exc), [])
+        config.update(updated)
+        cfgmod.save_config(updated, path=path)
+        return _exec_result(True, status, [effect], config=dict(updated))
+
+    if name == '/pause':
+        state['paused'] = True
+        return _exec_result(True, 'Rendering paused', ['paused'])
+    if name == '/resume':
+        state['paused'] = False
+        return _exec_result(True, 'Rendering resumed', ['resumed'])
+    if name == '/quit':
+        state['quit'] = True
+        return _exec_result(True, 'Exiting PiScope...', ['quit'])
+    if name == '/decision':
+        return _exec_result(True, 'Verdict shown', ['decision_shown'])
+
+    # /help and /config with no arguments: informational no-ops.
+    if name == '/help':
+        return _exec_result(True, 'Commands: ' + ', '.join(
+            c['name'] for c in COMMANDS), ['help_shown'])
+    return _exec_result(True, 'Config tab', ['config_shown'])

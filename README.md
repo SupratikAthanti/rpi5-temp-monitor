@@ -1,260 +1,264 @@
-# ThermalScope - Temperature & Cooler Decision Engine
+# PiScope — Live CLI Dashboard, Power & Cooler Decision Engine
 
-A lightweight temperature logging and performance analysis system for single-board computers (Raspberry Pi, Arduino, etc.) running without active cooling.
+PiScope is a lightweight temperature **and** power monitoring system for
+single-board computers (Raspberry Pi, Arduino, etc.). It answers two questions:
 
-Designed to answer the fundamental question: **Do I actually need a passive heatsink or an active cooler, or is my bare-board setup fine?**
-
----
-
-## Features
-
-1. **Passive 1-Minute Logging (`collect.sh`)**
-   - Records SoC temperature, PMIC temperature, 1-minute load average, ARM clock frequency, and firmware throttling bitmask (`vcgencmd get_throttled`).
-   - Gracefully falls back to `/sys/class/thermal/thermal_zone0/temp` if `vcgencmd` is unavailable.
-   - Storage footprint: **~750 KB per week** (10,080 samples in a single flat CSV).
-
-2. **Spike-Triggered Process Attribution (`spikes.csv`)**
-   - Tracks a rolling Exponential Moving Average (EMA) baseline of your daily temperature.
-   - Automatically captures a detailed snapshot (top processes with CPU/mem % and command-line arguments) whenever a **5°C+ jump** occurs above baseline (rate-limited with a 10-minute cooldown).
-   - Identifies real culprits rather than ambiguous generic process names.
-
-3. **Intelligent Decision Engine (`analyze.py`)**
-   - Computes statistical summaries (Min, Average, Median, Standard Deviation, 95th Percentile, Max).
-   - Breaks down temperature distribution across thermal zones (`<60°C`, `60–70°C`, `70–80°C`, `80–85°C` soft throttle zone, `>85°C` hard throttle zone).
-   - Frequency-weighted verdict logic: Distinguishes between rare spikes and frequent recurring heat to recommend **No Cooler**, **Passive Heatsink**, or **Active Cooler**.
-
-4. **Performance Impact Analysis**
-   - Tracks CPU frequency distribution (2400, 1500, 1000, 750, 600 MHz tiers).
-   - Calculates performance loss percentage and effective speed factor.
-   - Estimates time impact: "For a 1-hour task, thermal throttling added ~X minutes"
+**Do I actually need a passive heatsink or an active cooler — and what is my
+board costing me to run?**
 
 ---
 
-## Repository Files
+## One command opens everything
 
-- `collect.sh` — The lightweight cron collector and spike detector.
-- `analyze.py` — The statistics calculator, spike parser, and cooler recommendation engine.
-- `run-test.sh` — Test runner with progress indicator for timed tests.
-- `reset.sh` — Clears all collected data and state files.
-- `stop.sh` — Removes ThermalScope from crontab.
-- `tests/` — Comprehensive unit and simulation test suite.
-
----
-
-## Quick Start
-
-### 1. Make the Script Executable
 ```bash
-chmod +x collect.sh
+piscope
 ```
 
-### 2. Quick Test (2 minutes)
-Run the collector manually a few times to verify it works:
+That's it: **one command, no flags, no numbered menus**. PiScope opens a
+full-screen dashboard that renders every second. It is a single command that
+opens everything — live temperature, power, cost, battery, throttling and the
+full analysis — over SSH or on the console.
+
+To print a saved report instead of opening the dashboard:
+
+```bash
+piscope view temp_log.csv --power-log power_log.csv --range 7d
+```
+
+---
+
+## The five tabs
+
+The dashboard has exactly five tabs, always in this order:
+
+1. **Overview** — compact live temperature, power, cost and the verdict.
+2. **Temperature** — min / average (± std dev) / median / p95 / max SoC temp,
+   PMIC temperature, CPU load, ARM frequency, temperature distribution and ARM
+   frequency distribution (all in one tab).
+3. **Performance** — performance impact, throttling flags decoded from
+   `vcgencmd get_throttled`, top processes, spike attribution and the final
+   verdict with every reason.
+4. **Battery** — live PMIC rail breakdown, wall estimate, energy (Wh), cost
+   ($/kWh) and battery runtime estimates.
+5. **Config** — **the fifth and last tab**; edit intervals, mode, rate, battery
+   capacity and wall factor live.
+
+`←` / `→` switch tabs, `↑` / `↓` move the highlighted row (the view
+auto-scrolls to keep it visible), `Enter` opens a row's detail / provenance
+overlay (or edits a setting in Config), and `Esc` closes overlays or cancels an
+edit. `Home` / `End` jump to the first / last row, `PgUp` / `PgDn` jump a page.
+
+---
+
+## Command palette (`?`)
+
+Press **`?`** (or `/`) to open the command palette. Type to filter, `↑` / `↓`
+to select, `Enter` to run, `Esc` to close.
+
+| Command | Effect |
+|---|---|
+| `/help` | Show all commands |
+| `/config` | Jump to the Config tab; `/config set <key> <value>` edits a setting |
+| `/reset` | Confirm, then clear all collected logs and start fresh |
+| `/report` | Show the full saved text report |
+| `/range 7d` | Show a scrollable historical report (`2h`, `24h`, `7d`, dates) |
+| `/test 60` | Run a timed test in minutes (replaces `run-test.sh` from inside the CLI) |
+| `/cron start` / `/cron stop` / `/cron status` | Manage the background collector |
+| `/mode temp` / `/mode power` / `/mode both` | Switch what is sampled |
+| `/decision` | Show the cooler verdict with all reasons |
+| `/pause` / `/resume` | Freeze / unfreeze live rendering |
+| `/quit` | Exit PiScope (cron is left untouched) |
+
+**Example session**
+
+```
+$ piscope                         # dashboard opens, renders every 1 s
+  ?  → type "range 7d", Enter      # scrollable 7-day report
+  ?  → type "config set rate_per_kwh 0.22", Enter
+  ?  → type "cron start", Enter    # background collection begins
+  ?  → type "quit", Enter
+```
+
+---
+
+## Configuration — `~/.config/piscope/config.json`
+
+All settings live in `~/.config/piscope/config.json` (override the path with
+`PISCOPE_CONFIG_PATH`). The Config tab and `/config set` edit the same file:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `render_interval_s` | `1.0` | Dashboard redraw interval (seconds) |
+| `sample_interval_s` | `1.0` | Live sample interval (seconds) |
+| `log_cadence_s` | `60` | How often samples are persisted to CSV |
+| `mode` | `both` | `temp`, `power` or `both` |
+| `rate_per_kwh` | `0.15` | Electricity price in $/kWh |
+| `battery_wh` | `45.0` | Battery capacity in Wh |
+| `wall_factor` | `1.0` | PMIC → wall power multiplier |
+| `wall_slope`, `wall_intercept` | `1.0`, `0.0` | Optional wall calibration |
+| `energy_windows_min` | `[60, 120]` | Energy windows in minutes |
+
+### Modes
+
+- `temp` — sample temperature only (writes `temp_log.csv`).
+- `power` — sample PMIC power only (writes `power_log.csv`).
+- `both` — sample both (the default; recommended).
+
+---
+
+## Power, cost and battery
+
+PiScope sums the PMIC rails (`watts = max(V) × ΣA`, excluding voltage-only rails
+`EXT5V_V` and `BATT_V`) to report live **power** in watts and a wall estimate
+using the configured wall factor. It integrates power over time into **energy**
+in **Wh** (watt-hours), applies your **cost** rate in **$/kWh** (kilowatt-hours)
+for $/day and $/30-day figures, and estimates **battery** runtime in hours from
+the configured capacity in Wh. The Battery tab shows the rail breakdown, energy
+windows, cost and conservative (p95-based) runtime.
+
+---
+
+## Repository files
+
+- `piscope` — one-command entry point (`piscope` → TUI, `piscope view` → report).
+- `piscope_tui.py` — the five tabs, command palette, detail overlays and 1 Hz loop.
+- `piscope_commands.py` — command parsing and headless execution.
+- `piscope_config.py` — configuration defaults, persistence and validation.
+- `piscope_cli.py` — command-line argument handling.
+- `collect.sh` — the cron collector / spike detector (`--mode temp|power|both`).
+- `power_read.py` — PMIC rail-sum helper shared by the collector, TUI and CLI.
+- `analyze.py` — statistics, distributions, power/energy math and verdict engine.
+- `run-test.sh` — timed test with progress (also callable from `/test`).
+- `setup-cron.sh` — install the background collector (`start|stop|status`).
+- `stop.sh` — remove PiScope's cron entry.
+- `reset.sh` — clear all collected data and state files.
+- `tests/` — unit and simulation test suite.
+
+---
+
+## Legacy workflows (still available)
+
+The original shell workflows still work unchanged; PiScope's commands simply
+wrap them.
+
+### Quick test (2 minutes)
+
 ```bash
 ./collect.sh --dry-run
 ./collect.sh temp_log.csv
-./collect.sh temp_log.csv
 python3 analyze.py temp_log.csv
 ```
 
-### 3. Run for 1 Hour (Recommended Test)
-Use the test runner with progress indicator:
+### Run for 1 hour (recommended test)
+
 ```bash
 ./run-test.sh 60
+./run-test.sh --progress       # check progress from another terminal
 ```
 
-This will:
-- Show real-time progress with time remaining
-- Display a progress bar
-- Automatically run the analysis when complete
-- Show the full report at the end
+Or, from inside PiScope, type `?` then `/test 60`. Custom durations: 30 / 480 /
+1440 minutes are all accepted. For a background run use
+`tmux new -s piscope-test`, then `./run-test.sh 60` and `Ctrl+B`, `D` to detach.
 
-**To check progress from another terminal:**
+### Run for 1 week (full monitoring)
+
 ```bash
-./run-test.sh --progress
+./setup-cron.sh start          # installs one collector line; idempotent
+./setup-cron.sh status
+./setup-cron.sh stop           # removes only PiScope's line
 ```
 
-**To run in background with tmux:**
-```bash
-tmux new -s thermal-test
-./run-test.sh 60
-# Press Ctrl+B then D to detach
-```
+You can still edit the crontab by hand:
 
-**Custom durations:**
-```bash
-./run-test.sh 30    # 30 minutes
-./run-test.sh 480   # 8 hours
-./run-test.sh 1440  # 24 hours
-```
-
-### 4. Run for 1 Week (Full Monitoring)
-Set up cron to run automatically every minute:
-```bash
-crontab -e
-```
-Add these lines (replace paths with your actual path):
 ```cron
-@reboot /home/berry5/projects/temp/collect.sh /home/berry5/projects/temp/temp_log.csv
-* * * * * /home/berry5/projects/temp/collect.sh /home/berry5/projects/temp/temp_log.csv
+@reboot /home/berry5/projects/temp/collect.sh --mode both /home/berry5/projects/temp/temp_log.csv
+* * * * * /home/berry5/projects/temp/collect.sh --mode both /home/berry5/projects/temp/temp_log.csv
 ```
 
-**Note**: File locking prevents concurrent runs if a script takes longer than 1 minute.
+File locking prevents concurrent runs if a script takes longer than one minute.
 
----
+### View results anytime
 
-## Usage
-
-### View Results Anytime
-You don't need to wait for the full test period. Inspect your accumulated stats live:
 ```bash
 python3 analyze.py temp_log.csv
+# or, with power data:
+piscope view temp_log.csv --power-log power_log.csv
 ```
 
-**Note**: This automatically looks for `spikes.csv` in the same directory as `temp_log.csv` for spike attribution.
+Both routes call the same `analyze.build_report`, so the numbers always agree.
 
-### Stop the Test
-If running with `run-test.sh`:
+### Stop / reset
+
 ```bash
-# Find the PID and kill it
-./run-test.sh --progress  # Shows PID
-kill <PID>
-
-# Or just press Ctrl+C if running in foreground
+./stop.sh     # remove PiScope from crontab (or /cron stop in the TUI)
+./reset.sh    # clear all data files and state (or /reset in the TUI)
 ```
 
-If running in tmux:
+Manual reset (if needed):
+
 ```bash
-tmux attach -s thermal-test
-# Press Ctrl+C to stop
+rm -f temp_log.csv power_log.csv spikes.csv
+rm -f /tmp/rpi5_temp_state_${UID} /tmp/thermal-scope-collector.pid
 ```
 
-### Stop Cron (Stop Week-Long Monitoring)
-```bash
-./stop.sh
-```
-This will prompt you to remove ThermalScope entries from crontab.
+### Where results are stored
 
-### Where Results Are Stored
-- `temp_log.csv` — Main temperature log (one row per minute)
-- `spikes.csv` — Spike detection log (only created when 5°C+ jumps occur)
-- `/tmp/rpi5_temp_state_${UID}` — Temporary EMA baseline state (in RAM, cleared on reboot)
-- `/tmp/thermal-scope-collector.pid` — PID file to prevent concurrent runs
+- `temp_log.csv` — temperature log (one row per persisted sample).
+- `power_log.csv` — `timestamp,pmic_w,wall_w` power log.
+- `spikes.csv` — spike detection log (only created on 5°C+ jumps).
+- `/tmp/rpi5_temp_state_${UID}` — temporary EMA baseline state (cleared on reboot).
+- `/tmp/thermal-scope-collector.pid` — PID lock preventing concurrent runs.
 
-### Reset / Delete Results and Start Fresh
-```bash
-./reset.sh
-```
-This removes all data files and state files, giving you a clean slate.
+### Run the test suite
 
-**Manual reset (if needed):**
 ```bash
-rm temp_log.csv spikes.csv
-rm /tmp/rpi5_temp_state_${UID}
-rm /tmp/thermal-scope-collector.pid
-```
-
-### Run Test Suite
-```bash
-python3 -m unittest discover tests
+python3 tests/run_tests.py
 ```
 
 ---
 
-## Understanding the Report
+## Understanding the report
 
 The report provides three main recommendations:
 
-- **No Cooler Needed** — Your bare-board setup is sufficient
-- **Passive Heatsink Sufficient** — A heatsink will provide relief without fan noise
-- **Active Cooler Strongly Recommended** — You need active cooling to prevent thermal throttling
+- **No Cooler Needed** — your bare-board setup is sufficient
+- **Passive Heatsink Sufficient** — a heatsink will provide relief without fan noise
+- **Active Cooler Strongly Recommended** — you need active cooling to prevent
+  thermal throttling and performance degradation
 
-Key metrics to watch:
-- **Temperature Distribution** — What % of time you spend in each thermal zone
-- **Frequency Distribution** — What % of time at each CPU speed (throttled vs full speed)
-- **Performance Loss** — How much slower your system is due to thermal throttling
-- **Spike Attribution** — Which processes are causing temperature spikes
+Key metrics to watch: temperature distribution; frequency distribution;
+performance loss; spike attribution; energy (Wh), cost ($/kWh) and battery
+runtime.
 
-**Important**: The report uses **p95 (95th percentile)** not average. This means idle time doesn't skew the verdict - if you're idle 23 hours/day but hit 85°C for 1 hour, the p95 will still show ~84°C.
-
----
-
-## Common Errors & Solutions
-
-### Error: "Log file not found"
-**Cause**: You tried to run `analyze.py` before collecting any data.
-
-**Solution**: Run `./run-test.sh 60` for a 1-hour test, or manually collect data:
-```bash
-./collect.sh temp_log.csv
-./collect.sh temp_log.csv
-python3 analyze.py temp_log.csv
-```
-
-### Error: "No valid data in log file"
-**Cause**: The file exists but contains only the header or malformed data.
-
-**Solution**: Reset and start fresh:
-```bash
-./reset.sh
-./run-test.sh 60
-```
-
-### Error: "Another instance is already running"
-**Cause**: You tried to start a test while another test is already running.
-
-**Solution**: Check progress or stop the running test:
-```bash
-./run-test.sh --progress  # Shows PID and status
-kill <PID>               # Stop the running test
-```
-
-### Error: "Test Already Running" (run-test.sh)
-**Cause**: A test is already in progress.
-
-**Solution**: Check progress or stop it:
-```bash
-./run-test.sh --progress
-kill <PID>
-rm /tmp/thermal-scope-test.lock  # If process already stopped
-```
+**Important**: the report uses **p95 (95th percentile)**, not the average, so
+idle time doesn't skew the verdict — if you're idle 23 hours/day but hit 85 °C
+for 1 hour, p95 still shows ~84 °C.
 
 ---
 
-## Edge Cases & Important Notes
+## Common errors & solutions
 
-### Reboot Behavior
-- The state file (`/tmp/rpi5_temp_state_${UID}`) is stored in RAM and **cleared on reboot**
-- After reboot, the EMA baseline resets to the current temperature
-- This is expected behavior and not a problem
+- **"Log file not found"** — run `./run-test.sh 60` or collect a few samples first.
+- **"No valid data in log file"** — the file exists but has no valid rows;
+  `./reset.sh` then recollect.
+- **"Another instance is already running"** — a collector holds the PID lock;
+  check `./run-test.sh --progress`, stop it, or clear the stale lock file.
+- **Stale lock files** — `run-test.sh` and `reset.sh` clean these up.
+- **Partial data** — malformed CSV rows are skipped automatically.
 
-### Concurrent Runs
-- PID-based locking prevents multiple instances from running simultaneously
-- If you try to run the script while another instance is running, it will exit with an error: "Another instance is already running (PID: XXXXX). Exiting."
-- This prevents data corruption from overlapping writes
-- The PID file is automatically cleaned up when the script exits
+### Edge cases
 
-### Stale Lock Files
-- If a test crashes or is killed abnormally, the lock file may remain
-- `run-test.sh` automatically detects and cleans up stale lock files
-- `reset.sh` also removes all lock files
-
-### Partial Data Handling
-- If the system crashes during logging, the CSV may have incomplete lines
-- The analyze script skips malformed rows automatically
-- The reset script can clean up any corrupted data
-
-### Idle Time Doesn't Skew Results
-- Even if you're idle for 23 hours/day, the p95 and distribution metrics accurately show thermal stress
-- The frequency-weighted verdict distinguishes between "bursty/experimental" and "frequent/recurring" heat
+- The EMA state file lives in RAM and is **cleared on reboot** (expected).
+- PID locking prevents overlapping writes; a stale lock is auto-detected.
+- Even with 23 h/day idle, p95 and distributions accurately show thermal stress.
 
 ---
 
-## Example Report Output
+## Example report output
 
 ```text
 =================================================================
- THERMALSCOPE - TEMPERATURE & COOLER DECISION REPORT
+ PISCOPE - TEMPERATURE, POWER & COOLER DECISION REPORT
 =================================================================
  Log File          : temp_log.csv
  Total Samples     : 63
@@ -297,6 +301,12 @@ rm /tmp/thermal-scope-test.lock  # If process already stopped
 -----------------------------------------------------------------
  SPIKE ATTRIBUTION (5°C+ jumps, 2 events):
    opencode             :     2 spikes (peak 85.1°C, +12.7°C)
+-----------------------------------------------------------------
+ POWER / ENERGY / BATTERY:
+   PMIC rail sum        : 5.42 W   (wall est. 6.61 W, factor 1.0)
+   ENERGY   1 h: 2.91 Wh   full log: 21.4 Wh
+   COST     @ $0.15/kWh → 1 h $0.00044 · today $0.011 · 30 d $0.32
+   BATTERY  45 Wh → ~8.3 h @ avg · ~7.5 h @ p95 (conservative)
 -----------------------------------------------------------------
  FINAL VERDICT & RECOMMENDATION:
    => Active Cooler Strongly Recommended (Prevent thermal throttling and performance degradation)
