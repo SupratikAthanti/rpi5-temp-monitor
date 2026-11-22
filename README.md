@@ -73,10 +73,10 @@ to select, `Enter` to run, `Esc` to close.
 
 ```
 $ piscope                         # dashboard opens, renders every 1 s
-  ?  → type "range 7d", Enter      # scrollable 7-day report
-  ?  → type "config set rate_per_kwh 0.22", Enter
-  ?  → type "cron start", Enter    # background collection begins
-  ?  → type "quit", Enter
+  ?  → type "/range 7d", Enter      # scrollable 7-day report
+  ?  → type "/config set rate_per_kwh 0.22", Enter
+  ?  → type "/cron start", Enter    # background collection begins
+  ?  → type "/quit", Enter
 ```
 
 ---

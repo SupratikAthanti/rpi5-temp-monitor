@@ -345,10 +345,10 @@ $ piscope                       # dashboard opens, renders every 1 s
 # → once: Temperature tab; ↓ repeatedly → highlight walks stats into the
 #   distribution sections, view auto-scrolls to keep the section visible
 # → again: Performance tab; ↓ to spike rows, Enter for process snapshot
-# ? then type "range 7d", Enter → scrollable 7-day report
-# ? then type "config set refresh 2s", Enter → now renders every 2 s
-# ? then type "cron start", Enter → background collection begins
-# ? then type "quit", Enter
+# ? then type "/range 7d", Enter → scrollable 7-day report
+# ? then type "/config set render_interval_s 2", Enter → now renders every 2 s
+# ? then type "/cron start", Enter → background collection begins
+# ? then type "/quit", Enter
 ```
 
 ---
