@@ -300,17 +300,29 @@ def move_selection(rows, index, scroll, viewport_height, direction):
 
 
 def scroll_to_section(rows, index, scroll, viewport_height):
-    """Scroll ``index``'s section title to the top of the viewport."""
+    """Anchor ``index``'s section at the top, but keep the row visible.
+
+    The section title is placed at the top of the viewport when that does not
+    hide the selection.  If it would, the smallest scroll that still shows the
+    selected row is used instead (so PgUp/PgDn can never anchor the row away).
+    """
     count = len(rows)
     if count == 0:
         return 0
+    height = max(1, int(viewport_height))
     idx = max(0, min(count - 1, int(index)))
+    anchored = 0
     if rows[idx].get('kind') == 'section':
-        return idx
-    for pos in range(idx - 1, -1, -1):
-        if rows[pos].get('kind') == 'section':
-            return pos
-    return 0
+        anchored = idx
+    else:
+        for pos in range(idx - 1, -1, -1):
+            if rows[pos].get('kind') == 'section':
+                anchored = pos
+                break
+    # Minimum legal scroll that still displays the selected row.
+    anchored = max(anchored, idx - height + 1)
+    anchored = max(0, min(max(0, count - height), anchored))
+    return anchored
 
 
 def resolve_enter_action(row, tab):
@@ -325,6 +337,146 @@ def cancel_edit(state):
     out = dict(state or {})
     out['editing'] = False
     out['buffer'] = ''
+    return out
+
+
+def resolve_palette_enter(buffer, filtered=None, cmd_index=0, parse_fn=None):
+    """Decide which command Enter runs in the command palette.
+
+    A complete, valid command typed in the buffer is honoured verbatim (design
+    §12).  Otherwise the buffer is treated as a filter fragment and the
+    highlighted entry of ``filtered`` is returned.  The index is always
+    clamped, so an empty filter can never raise ``IndexError``.
+    """
+    text = str(buffer or '').strip()
+    parser = parse_fn
+    if parser is None and _commands is not None:
+        parser = _commands.parse_command
+    if text and parser is not None:
+        try:
+            parsed = parser(text)
+        except Exception:
+            parsed = None
+        if parsed is True or (isinstance(parsed, dict) and parsed.get('valid')):
+            return text
+
+    shown = list(filtered or [])
+    if not shown:
+        return '?'
+    try:
+        idx = int(cmd_index)
+    except (TypeError, ValueError):
+        idx = 0
+    idx = max(0, min(len(shown) - 1, idx))
+    entry = shown[idx]
+    name = entry.get('name') if isinstance(entry, dict) else entry
+    return str(name or '?')
+
+
+def resolve_key_action(key, curses_mod=None):
+    """Map a raw key code or symbolic key name to a ``KEY_BINDINGS`` action.
+
+    ``curses_mod`` may be a stub exposing the ``KEY_*`` constants, so this
+    helper is testable without importing curses.  TAB and Shift+Tab are kept
+    distinct (``next_tab`` / ``prev_tab``) instead of being lumped in with the
+    left-arrow action.
+    """
+    mod = curses_mod if curses_mod is not None else globals().get('_curses')
+    if key is None:
+        return None
+
+    if isinstance(key, str):
+        token = key.strip().lower()
+        if token in ('\t', 'tab'):
+            return KEY_BINDINGS['tab']
+        if token in ('shift_tab', 'btab', 'shift+tab'):
+            return KEY_BINDINGS['shift_tab']
+        if token in ('enter', 'newline', 'return', '\n', '\r'):
+            return KEY_BINDINGS['enter']
+        if token in ('esc', 'escape'):
+            return KEY_BINDINGS['esc']
+        return KEY_BINDINGS.get(token)
+
+    if key == 9:
+        return KEY_BINDINGS['tab']
+
+    if mod is not None:
+        def code(name):
+            return getattr(mod, name, None)
+
+        if code('KEY_BTAB') is not None and key == code('KEY_BTAB'):
+            return KEY_BINDINGS['shift_tab']
+        for attr, action in (
+            ('KEY_LEFT', 'left'), ('KEY_RIGHT', 'right'),
+            ('KEY_UP', 'up'), ('KEY_DOWN', 'down'),
+            ('KEY_HOME', 'home'), ('KEY_END', 'end'),
+            ('KEY_PPAGE', 'page_up'), ('KEY_NPAGE', 'page_down'),
+        ):
+            value = code(attr)
+            if value is not None and key == value:
+                return KEY_BINDINGS[action]
+
+    if key in (10, 13):
+        return KEY_BINDINGS['enter']
+    if key == 27:
+        return KEY_BINDINGS['esc']
+    if key in (ord('?'), ord('/')):
+        return KEY_BINDINGS[chr(key)]
+    return None
+
+
+def build_palette_view(filtered, cmd_index=0, limit=4):
+    """Return the drawable command lines and the visible selection window."""
+    commands = list(filtered or [])
+    if not commands:
+        return {'lines': [], 'index': 0, 'start': 0}
+    try:
+        idx = int(cmd_index)
+    except (TypeError, ValueError):
+        idx = 0
+    idx = max(0, min(len(commands) - 1, idx))
+    window = max(1, int(limit))
+    start = min(max(0, idx - window + 1),
+                max(0, len(commands) - window))
+    lines = []
+    for pos in range(start, min(len(commands), start + window)):
+        cmd = commands[pos]
+        if isinstance(cmd, dict):
+            name = cmd.get('name', '')
+            description = cmd.get('description', '')
+        else:
+            name, description = str(cmd), ''
+        marker = '>' if pos == idx else ' '
+        lines.append(f'{marker} {name}  {description}'.rstrip())
+    return {'lines': lines, 'index': idx, 'start': start}
+
+
+def start_config_edit(state, rows):
+    """Seed an inline Config editor with the selected row's current value."""
+    out = dict(state or {})
+    out['editing'] = True
+    text = ''
+    try:
+        idx = int(out.get('index', 0))
+    except (TypeError, ValueError):
+        idx = 0
+    if 0 <= idx < len(rows or []):
+        text = str((rows[idx] or {}).get('text', ''))
+    buffer = ''
+    if '[' in text and ']' in text:
+        buffer = text.split('[', 1)[1].split(']', 1)[0].strip()
+    out['buffer'] = buffer
+    out['cursor'] = len(buffer)
+    return out
+
+
+def handle_escape(state):
+    """Esc opens/focuses the command bar as a real state transition."""
+    out = dict(state or {})
+    out['palette'] = True
+    out['command_focus'] = True
+    out['buffer'] = ''
+    out['cmd_index'] = 0
     return out
 
 
@@ -656,10 +808,12 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
         put(2 + offset, text, attr)
 
     if filtered is not None:
+        view = build_palette_view(filtered, state.get('cmd_index', 0))
         base = max(2, height - 6)
         put(base, ' COMMANDS (Esc to close):')
-        for i, cmd in enumerate(filtered[:4]):
-            put(base + 1 + i, '   ' + cmd['name'] + '  ' + cmd['description'])
+        for i, line in enumerate(view['lines']):
+            if base + 1 + i < height - 1:
+                put(base + 1 + i, line[:max(0, width - 1)])
 
     detail = state.get('detail')
     if isinstance(detail, dict):
@@ -680,7 +834,15 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
             put(base + i, line[:max(0, width - 1)])
 
     if state.get('editing'):
-        bar = f" piscope › edit [{state.get('buffer', '')}]  Enter save · Esc cancel"
+        edit_buffer = str(state.get('buffer', ''))
+        try:
+            caret = max(0, min(len(edit_buffer),
+                               int(state.get('cursor', len(edit_buffer)))))
+        except (TypeError, ValueError):
+            caret = len(edit_buffer)
+        # Design §9 shows the caret inline, e.g. "[ 2_ ]" while editing.
+        shown = edit_buffer[:caret] + '_' + edit_buffer[caret:]
+        bar = f" piscope › edit [{shown}]  Enter save · Esc cancel"
     else:
         bar = ' piscope › ' + state.get('buffer', '') + '     ? commands · ← → tabs · ↑ ↓ rows · Enter detail'
     if status:
@@ -734,6 +896,7 @@ def _tui_loop(stdscr, cfg):
         'tab_index': 0, 'index': 0, 'scroll': 0, 'buffer': '',
         'palette': False, 'editing': False, 'detail': None,
         'paused': False, 'quit': False, 'cmd_index': 0,
+        'command_focus': False,
     }
     status = ''
     filtered = None
@@ -760,6 +923,9 @@ def _tui_loop(stdscr, cfg):
             max(1, stdscr.getmaxyx()[0] - 4), 'none')
         if state['palette'] and _commands:
             filtered = _commands.filter_commands(state['buffer'])
+            # Keep the highlighted command on-screen and in range.
+            state['cmd_index'] = build_palette_view(
+                filtered, state.get('cmd_index', 0))['index']
         else:
             filtered = None
         _render(stdscr, state, rows, cfg, filtered, status)
@@ -796,8 +962,10 @@ def _tui_loop(stdscr, cfg):
                 status = 'Edit cancelled'
             elif key in (8, 127, _curses.KEY_BACKSPACE if _curses else 8):
                 state['buffer'] = state['buffer'][:-1]
+                state['cursor'] = len(state['buffer'])
             elif 32 <= key < 127:
                 state['buffer'] += chr(key)
+                state['cursor'] = len(state['buffer'])
             continue
 
         # Command palette.
@@ -807,13 +975,8 @@ def _tui_loop(stdscr, cfg):
                 state['buffer'] = ''
                 status = ''
             elif key in (10, 13):
-                if state['buffer'].strip():
-                    text = state['buffer']
-                elif filtered:
-                    pick = min(state['cmd_index'], len(filtered) - 1)
-                    text = filtered[pick]['name']
-                else:
-                    text = '?'
+                text = resolve_palette_enter(
+                    state['buffer'], filtered, state.get('cmd_index', 0))
                 result = _commands.parse_command(text) if _commands else None
                 status = _command_action(result, state, cfg)
                 state['palette'] = False
@@ -830,60 +993,42 @@ def _tui_loop(stdscr, cfg):
                 state['cmd_index'] = 0
             continue
 
-        # Normal navigation.
-        if key in (ord('?'), ord('/')):
+        # Normal navigation: route every key through resolve_key_action so
+        # TAB / Shift+Tab and the arrow keys keep their distinct meanings.
+        action = resolve_key_action(key, _curses)
+        if action == 'commands':
             state['palette'] = True
             state['buffer'] = ''
             state['cmd_index'] = 0
-        elif key in (_curses.KEY_LEFT, 9, getattr(_curses, 'KEY_BTAB', -1)):
-            # left arrow / Tab / Shift+Tab
-            state['tab_index'] = (state['tab_index'] - 1) % len(TABS)
+        elif action in ('prev_tab', 'next_tab'):
+            step = -1 if action == 'prev_tab' else 1
+            state['tab_index'] = (state['tab_index'] + step) % len(TABS)
             state['index'] = state['scroll'] = 0
-        elif key in (_curses.KEY_RIGHT,):
-            state['tab_index'] = (state['tab_index'] + 1) % len(TABS)
-            state['index'] = state['scroll'] = 0
-        elif key == _curses.KEY_UP:
+        elif action in ('move_up', 'move_down', 'home', 'end',
+                        'page_up', 'page_down'):
+            direction = {
+                'move_up': 'up', 'move_down': 'down', 'home': 'home',
+                'end': 'end', 'page_up': 'page_up',
+                'page_down': 'page_down',
+            }[action]
+            height = max(1, stdscr.getmaxyx()[0] - 4)
             state['index'], state['scroll'] = move_selection(
-                rows, state['index'], state['scroll'],
-                max(1, stdscr.getmaxyx()[0] - 4), 'up')
-        elif key == _curses.KEY_DOWN:
-            state['index'], state['scroll'] = move_selection(
-                rows, state['index'], state['scroll'],
-                max(1, stdscr.getmaxyx()[0] - 4), 'down')
-        elif key in (_curses.KEY_HOME,):
-            state['index'], state['scroll'] = move_selection(
-                rows, state['index'], state['scroll'],
-                max(1, stdscr.getmaxyx()[0] - 4), 'home')
-        elif key in (_curses.KEY_END,):
-            state['index'], state['scroll'] = move_selection(
-                rows, state['index'], state['scroll'],
-                max(1, stdscr.getmaxyx()[0] - 4), 'end')
-        elif key in (_curses.KEY_PPAGE,):
-            state['index'], state['scroll'] = move_selection(
-                rows, state['index'], state['scroll'],
-                max(1, stdscr.getmaxyx()[0] - 4), 'page_up')
-            state['scroll'] = scroll_to_section(rows, state['index'],
-                                                state['scroll'],
-                                                stdscr.getmaxyx()[0] - 4)
-        elif key in (_curses.KEY_NPAGE,):
-            state['index'], state['scroll'] = move_selection(
-                rows, state['index'], state['scroll'],
-                max(1, stdscr.getmaxyx()[0] - 4), 'page_down')
-            state['scroll'] = scroll_to_section(rows, state['index'],
-                                                state['scroll'],
-                                                stdscr.getmaxyx()[0] - 4)
-        elif key in (10, 13):
+                rows, state['index'], state['scroll'], height, direction)
+            if direction in ('page_up', 'page_down'):
+                state['scroll'] = scroll_to_section(
+                    rows, state['index'], state['scroll'], height)
+        elif action == 'activate':
             if state['index'] < len(rows):
-                action = resolve_enter_action(
+                row_action = resolve_enter_action(
                     rows[state['index']], TABS[state['tab_index']])
-                if action == 'edit':
-                    state['editing'] = True
-                    state['buffer'] = ''
-                elif action == 'detail':
+                if row_action == 'edit':
+                    state = start_config_edit(state, rows)
+                elif row_action == 'detail':
                     state['detail'] = build_detail(
                         rows[state['index']], TABS[state['tab_index']], ctx)
-        elif key in (27,):
-            status = 'Esc: command bar focused (type ? for help)'
+        elif action == 'cancel':
+            state = handle_escape(state)
+            status = 'Esc: command bar focused'
         elif key in (ord('q'),):
             state['quit'] = True
 

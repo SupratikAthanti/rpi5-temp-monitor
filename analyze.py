@@ -7,6 +7,7 @@ import csv
 import sys
 import os
 import math
+import re
 import datetime
 from collections import Counter
 
@@ -362,6 +363,86 @@ def _iso_epoch(timestamp):
         return 0.0
 
 
+_RANGE_DURATION_RE = re.compile(r'^(\d+(?:\.\d+)?)\s*([mhdw])$', re.IGNORECASE)
+_DURATION_SECONDS = {
+    'm': 60.0, 'h': 3600.0, 'd': 86400.0, 'w': 604800.0,
+}
+
+
+def _record_epoch(record):
+    """Return a usable epoch seconds value for a record, or ``None``."""
+    if not isinstance(record, dict):
+        return None
+    raw = record.get('epoch')
+    if raw is not None and str(raw).strip() != '':
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            pass
+    timestamp = record.get('timestamp')
+    if timestamp:
+        value = _iso_epoch(timestamp)
+        if value:
+            return value
+    return None
+
+
+def _range_day_epoch(text):
+    """Epoch of the start of a UTC day (or of a full timestamp)."""
+    value = str(text or '').strip()
+    if not value:
+        return 0.0
+    if 'T' not in value and ' ' not in value:
+        value += 'T00:00:00Z'
+    return _iso_epoch(value)
+
+
+def filter_records_by_range(records, range_spec, now=None):
+    """Return the subset of ``records`` falling inside ``range_spec``.
+
+    Supported specs are relative durations (``30m``, ``2h``, ``24h``, ``7d``,
+    ``30d``) measured back from ``now`` (by default the latest record epoch),
+    and explicit inclusive UTC day spans (``YYYY-MM-DD..YYYY-MM-DD``).
+    ``None``/empty returns every record unchanged.  Records whose timestamp
+    cannot be parsed are dropped whenever a range is active.
+    """
+    items = list(records or [])
+    if range_spec is None or str(range_spec).strip() == '':
+        return items
+
+    spec = str(range_spec).strip()
+    epochs = [_record_epoch(record) for record in items]
+    usable = [epoch for epoch in epochs if epoch is not None]
+
+    if now is None:
+        base = max(usable) if usable else 0.0
+    elif isinstance(now, (int, float)) and not isinstance(now, bool):
+        base = float(now)
+    else:
+        base = _iso_epoch(now)
+
+    low = None
+    high = None
+    match = _RANGE_DURATION_RE.match(spec)
+    if match:
+        low = base - float(match.group(1)) * _DURATION_SECONDS[
+            match.group(2).lower()]
+    elif '..' in spec:
+        start_text, end_text = spec.split('..', 1)
+        low = _range_day_epoch(start_text)
+        high = _range_day_epoch(end_text) + 86400.0
+    else:
+        # Unrecognised syntax: keep the data rather than silently dropping it.
+        return items
+
+    kept = []
+    for record, epoch in zip(items, epochs):
+        if epoch is None or epoch < low or (high is not None and epoch >= high):
+            continue
+        kept.append(record)
+    return kept
+
+
 def parse_power_log_string(csv_text):
     """Parse ``timestamp,pmic_w,wall_w`` CSV text into record dicts."""
     records = []
@@ -503,9 +584,11 @@ def build_report(log_file, power_log_file=None, config=None, range_spec=None):
     is supplied, appends a POWER / ENERGY / BATTERY section.
     """
     records = parse_csv_file(log_file)
+    if range_spec:
+        records = filter_records_by_range(records, range_spec)
     lines = []
     lines.append('=' * 65)
-    lines.append(' THERMALSCOPE - TEMPERATURE & COOLER DECISION REPORT')
+    lines.append(' PiScope - TEMPERATURE & COOLER DECISION REPORT')
     lines.append('=' * 65)
 
     if not records:
@@ -633,6 +716,8 @@ def build_report(log_file, power_log_file=None, config=None, range_spec=None):
         lines.append(f'      - {reason}')
 
     power_records = parse_power_log(power_log_file) if power_log_file else []
+    if range_spec:
+        power_records = filter_records_by_range(power_records, range_spec)
     if power_records:
         lines.extend(_power_section_lines(power_records, config))
 
