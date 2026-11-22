@@ -777,49 +777,144 @@ def _command_action(command, state, cfg):
 
 
 def _render(stdscr, state, rows, cfg, filtered=None, status=''):
+    """Draw a single, width-aware frame with one consistent right edge.
+
+    Layout (top to bottom)::
+
+        ╔═ PiScope · TAB ───────────────────────────────────────╗
+        ║ ◀ Overview │ … │ Config ▶                            ║
+        ╟────────────────────────────────────────────────────────╢
+        ║ header · … · clock (right-aligned)                     ║
+        ║ content rows …                                        ║
+        ╟────────────────────────────────────────────────────────╢
+        ╚ piscope › …                 shortcut hint (right)     ╝
+
+    Every row uses the exact same right-edge column.  Curses cannot safely
+    paint the very last column of a terminal (writing there wraps the cursor),
+    so the frame occupies columns ``0 .. width-2`` and the right border sits
+    at column ``width-2``.  That is also the widest a line may be for the
+    stdscr contract used by the alignment tests.
+    """
     height, width = stdscr.getmaxyx()
     if height < 4 or width < 20:
         return
     stdscr.erase()
 
-    def put(y, text, attr=0):
-        if 0 <= y < height:
+    right_x = width - 2          # the one and only right-edge column
+    text_x = 2                   # one blank cell after the left border
+    text_max = right_x - text_x  # usable columns for a row's text
+
+    def _put(y, x, text, n, attr=0):
+        if 0 <= y < height and 0 <= x < width and n > 0:
             try:
-                stdscr.addnstr(y, 0, str(text), max(0, width - 1), attr)
+                stdscr.addnstr(y, x, str(text)[:max(0, n)], max(0, n), attr)
             except Exception:
                 pass
 
-    interval = cfg.get('render_interval_s', DEFAULT_RENDER_INTERVAL_S)
-    header = (f" PiScope · mode={cfg.get('mode', 'both')} · render {interval}s"
-              f" · {'PAUSED' if state.get('paused') else 'LIVE'}"
-              f" · {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    put(0, header)
-    tabs = ' │ '.join(
-        ('◀ ' + t if i == state['tab_index'] else t)
-        for i, t in enumerate(TABS))
-    put(1, ' ' + tabs)
+    def _clip(text, limit):
+        """Truncate with an ellipsis, preferring a word boundary when possible."""
+        text = str(text)
+        if limit <= 0:
+            return ''
+        if len(text) <= limit:
+            return text
+        if limit == 1:
+            return '…'
+        head = text[:limit - 1]
+        boundary = head.rfind(' ')
+        if boundary >= max(1, limit // 2):
+            return head[:boundary].rstrip() + '…'
+        return head + '…'
 
+    def _lined(y, text, attr=0, left='║', right='║', pad=True):
+        """Draw one bordered row: left frame, text, right frame."""
+        if not (0 <= y < height):
+            return
+        text = _clip(text, text_max)
+        if pad:
+            text = text.ljust(text_max)
+        _put(y, 0, left, 1)
+        _put(y, text_x, text, text_max, attr)
+        _put(y, right_x, right, 1)
+
+    def _separator(y):
+        if 0 <= y < height:
+            _put(y, 0, '╟' + '─' * max(0, width - 3) + '╢', width - 1)
+
+    # --- row 0: top border, with the active tab as its title ---------------
+    tab_index = state['tab_index']
+    tab_name = TABS[tab_index] if 0 <= tab_index < len(TABS) else TABS[0]
+    title = _clip(f'╔═ PiScope · {tab_name.upper()} ', width - 2)
+    _put(0, 0, title + '─' * max(0, width - 2 - len(title)) + '╗', width - 1)
+
+    # --- row 1: tab bar (active tab keeps its leading ◀; add a trailing ▶) -
+    active = [('◀ ' + t if i == tab_index else t) for i, t in enumerate(TABS)]
+    tabs = None
+    for sep in (' │ ', '│'):
+        candidate = ' ' + sep.join(active) + ' ▶ '
+        if len(candidate) <= text_max:
+            tabs = candidate
+            break
+    if tabs is None:
+        tabs = _clip(' ' + '│'.join(active) + '▶', text_max)
+    _lined(1, tabs)
+
+    _separator(2)
+
+    # --- row 3: header, with the clock right-aligned at the right border ---
+    interval = cfg.get('render_interval_s', DEFAULT_RENDER_INTERVAL_S)
+    mode = cfg.get('mode', 'both')
+    live = 'PAUSED' if state.get('paused') else 'LIVE'
+    session = state.get('session_time', '')
+    lefts = [
+        f'PiScope · {live} · mode={mode} · render {interval}s'
+        + (f' · session {session}' if session else ''),
+        f'PiScope · {live} · mode={mode} · render {interval}s',
+        f'PiScope · {live} · mode={mode}',
+        f'PiScope · {live}',
+        'PiScope',
+    ]
+    clocks = [time.strftime('%Y-%m-%d %H:%M:%S'),
+              time.strftime('%H:%M:%S'), time.strftime('%H:%M')]
+    header = _clip('PiScope · ' + clocks[-1], text_max)
+    for clock in clocks:
+        for left in lefts:
+            if len(left) + 2 + len(clock) <= text_max:
+                header = left + ' ' * (text_max - len(left) - len(clock)) + clock
+                break
+        else:
+            continue
+        break
+    _lined(3, header, pad=False)
+
+    # --- rows 4 .. height-3: content ---------------------------------------
     top = state['scroll']
-    visible = max(1, height - 4)
+    visible = max(1, height - 6)
     for offset in range(visible):
         pos = top + offset
         if pos >= len(rows):
             break
         row = rows[pos]
         marker = '>' if pos == state['index'] else ' '
-        text = f"{marker} {row['label']:<24} {row['text']}"
+        prefix = f"{marker} {row['label']:<24} "
+        text = str(row['text'])
+        avail = text_max - len(prefix)
+        if avail > 1:
+            content = prefix + _clip(text, avail).rjust(avail)
+        else:
+            content = _clip(prefix + text, text_max)
         attr = 0
         if pos == state['index']:
             attr = 1 if _curses_A_REVERSE is None else _curses_A_REVERSE
-        put(2 + offset, text, attr)
+        _lined(4 + offset, content, attr)
 
     if filtered is not None:
         view = build_palette_view(filtered, state.get('cmd_index', 0))
-        base = max(2, height - 6)
-        put(base, ' COMMANDS (Esc to close):')
+        base = max(4, height - 6)
+        _lined(base, ' COMMANDS (Esc to close):')
         for i, line in enumerate(view['lines']):
             if base + 1 + i < height - 1:
-                put(base + 1 + i, line[:max(0, width - 1)])
+                _lined(base + 1 + i, line)
 
     detail = state.get('detail')
     if isinstance(detail, dict):
@@ -835,10 +930,13 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
             lines.append('   process: {comm} cpu={cpu}% mem={mem}% {args}'.format(
                 comm=proc.get('comm', ''), cpu=proc.get('cpu_pct', ''),
                 mem=proc.get('mem_pct', ''), args=proc.get('args', '')))
-        base = max(2, height - 4 - len(lines))
+        base = max(4, height - 4 - len(lines))
         for i, line in enumerate(lines):
-            put(base + i, line[:max(0, width - 1)])
+            _lined(base + i, line)
 
+    _separator(height - 2)
+
+    # --- last row: command bar, fused with the bottom frame edge -----------
     if state.get('editing'):
         edit_buffer = str(state.get('buffer', ''))
         try:
@@ -848,12 +946,32 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
             caret = len(edit_buffer)
         # Design §9 shows the caret inline, e.g. "[ 2_ ]" while editing.
         shown = edit_buffer[:caret] + '_' + edit_buffer[caret:]
-        bar = f" piscope › edit [{shown}]  Enter save · Esc cancel"
+        left = 'piscope › edit [' + shown + ']'
+        hints = ['Enter save · Esc cancel']
     else:
-        bar = ' piscope › ' + state.get('buffer', '') + '     ? commands · ← → tabs · ↑ ↓ rows · Enter detail'
-    if status:
-        bar += '  |  ' + status
-    put(height - 1, bar[:max(0, width - 1)])
+        left = 'piscope › ' + state.get('buffer', '')
+        hints = [
+            '? commands · ← → tabs · ↑ ↓ rows · Enter detail',
+            '? commands · ← → tabs · ↑ ↓ rows',
+            '? commands · ← → tabs',
+            '? commands',
+            '',
+        ]
+    prefix_status = status + '  |  ' if status else ''
+    bar = None
+    for hint in hints:
+        right_text = prefix_status + hint
+        if len(left) + 2 + len(right_text) <= text_max:
+            bar = (left
+                   + ' ' * (text_max - len(left) - len(right_text))
+                   + right_text)
+            break
+    if bar is None:
+        room = max(1, text_max - len(prefix_status) - 2)
+        left = _clip(left, room)
+        right_text = prefix_status[:max(0, text_max - len(left) - 2)]
+        bar = left + ' ' * max(0, text_max - len(left) - len(right_text)) + right_text
+    _lined(height - 1, bar, left='╚', right='╝')
     stdscr.refresh()
 
 
