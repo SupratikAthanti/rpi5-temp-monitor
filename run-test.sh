@@ -6,6 +6,28 @@
 
 set -uo pipefail
 
+# PiScope: extract --mode MODE / --mode=MODE from anywhere in the arguments
+# and pass it through to collect.sh.  Remaining args keep their old meaning.
+MODE="both"
+_MODE_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --mode)
+            MODE="${2:-both}"
+            shift 2
+            ;;
+        --mode=*)
+            MODE="${1#--mode=}"
+            shift
+            ;;
+        *)
+            _MODE_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${_MODE_ARGS[@]}"
+
 # Handle --progress flag first
 if [[ "${1:-}" == "--progress" ]]; then
     LOCK_FILE="/tmp/thermal-scope-test.lock"
@@ -217,7 +239,7 @@ for ((i=1; i<=DURATION_MINUTES; i++)); do
         "$i"
 
     # Run collection
-    ./collect.sh "$LOG_FILE" > /dev/null 2>&1
+    ./collect.sh --mode "$MODE" "$LOG_FILE" > /dev/null 2>&1
 
     # Sleep for 60 seconds (only if not last iteration)
     if [[ $i -lt $DURATION_MINUTES ]]; then

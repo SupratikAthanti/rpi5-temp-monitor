@@ -1,24 +1,72 @@
 #!/usr/bin/env bash
 #
-# RPi 5 Lightweight Temperature & Metric Collector
+# RPi 5 Lightweight Temperature & Power Collector
 # Designed for week-long logging with minimal resource usage.
+#
+# Usage: ./collect.sh [--mode temp|power|both] [--skip-if-locked] [--dry-run] [LOG_FILE]
+#
+# Optional environment hooks (used by the test suite, no real hardware touched):
+#   POWER_LOG           power CSV destination (default: <logdir>/power_log.csv)
+#   COLLECTOR_PID_FILE  pid lock file (default: /tmp/thermal-scope-collector.pid)
+#   FAKE_SOC_TEMP       deterministic SoC temperature
+#   FAKE_PMIC_ADC       raw vcgencmd pmic_read_adc text
+#   WALL_FACTOR         PMIC -> wall multiplier (default 1)
 #
 
 set -uo pipefail
 
-# Default log file path
-LOG_FILE="${1:-/home/berry5/projects/temp/temp_log.csv}"
-DRY_RUN=false
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [[ "${1:-}" == "--dry-run" ]] || [[ "${2:-}" == "--dry-run" ]]; then
-    DRY_RUN=true
-fi
+# --- argument parsing (flags may appear before or after the log path) ---
+LOG_FILE=""
+MODE="both"
+DRY_RUN=false
+SKIP_IF_LOCKED=false
+_args=("$@")
+for ((_i = 0; _i < ${#_args[@]}; _i++)); do
+    case "${_args[$_i]}" in
+        --mode)
+            MODE="${_args[$((_i + 1))]:-both}"
+            ((_i++))
+            ;;
+        --mode=*)
+            MODE="${_args[$_i]#--mode=}"
+            ;;
+        --skip-if-locked)
+            SKIP_IF_LOCKED=true
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            ;;
+        *)
+            if [[ -z "$LOG_FILE" ]]; then
+                LOG_FILE="${_args[$_i]}"
+            fi
+            ;;
+    esac
+done
+
+LOG_FILE="${LOG_FILE:-/home/berry5/projects/temp/temp_log.csv}"
+case "$MODE" in
+    temp|power|both) ;;
+    *) MODE="both" ;;
+esac
+WANT_TEMP=false
+WANT_POWER=false
+[[ "$MODE" == "temp" || "$MODE" == "both" ]] && WANT_TEMP=true
+[[ "$MODE" == "power" || "$MODE" == "both" ]] && WANT_POWER=true
+
+POWER_LOG="${POWER_LOG:-$(dirname "$LOG_FILE")/power_log.csv}"
 
 # File locking to prevent concurrent runs (PID-based)
-PID_FILE="/tmp/thermal-scope-collector.pid"
+PID_FILE="${COLLECTOR_PID_FILE:-/tmp/thermal-scope-collector.pid}"
 if [[ -f "$PID_FILE" ]]; then
     OLD_PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
     if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+        if [[ "$SKIP_IF_LOCKED" == "true" ]]; then
+            # Another live collector owns the lock: leave everything untouched.
+            exit 0
+        fi
         echo "Another instance is already running (PID: $OLD_PID). Exiting." >&2
         exit 1
     else
@@ -107,25 +155,52 @@ if [[ -n "$PS_LINE" ]]; then
     TOP_CPU="$(echo "$PS_LINE" | awk '{print $2}')"
 fi
 
+# --- power reading (PMIC rails A x V, wall estimate) ---
+PMIC_W="0.0"
+WALL_FACTOR="${WALL_FACTOR:-1.0}"
+if [[ "$WANT_POWER" == "true" ]]; then
+    ADC_TEXT="${FAKE_PMIC_ADC:-}"
+    if [[ -z "$ADC_TEXT" ]] && command -v vcgencmd &>/dev/null; then
+        ADC_TEXT="$(vcgencmd pmic_read_adc 2>/dev/null || true)"
+    fi
+    if [[ -n "$ADC_TEXT" ]]; then
+        PMIC_W="$(printf '%s\n' "$ADC_TEXT" | python3 "$SCRIPT_DIR/power_read.py" 2>/dev/null || echo "0.0")"
+    fi
+    WALL_W="$(awk -v p="$PMIC_W" -v f="$WALL_FACTOR" 'BEGIN {printf "%.6f", p * f}')"
+else
+    WALL_W="0.0"
+fi
+
 # Assemble CSV line
 CSV_LINE="${TIMESTAMP},${SOC_TEMP},${PMIC_TEMP},${LOAD_1M},${ARM_FREQ},${THROTTLED},${TOP_PROC},${TOP_CPU}"
+POWER_LINE="${TIMESTAMP},${PMIC_W},${WALL_W}"
 
 if [[ "$DRY_RUN" == "true" ]]; then
     echo "$CSV_LINE"
     exit 0
 fi
 
-# Ensure log directory exists
+# Ensure log directories exist
 LOG_DIR="$(dirname "$LOG_FILE")"
 mkdir -p "$LOG_DIR"
 
-# Write header if file doesn't exist or is empty
-if [[ ! -s "$LOG_FILE" ]]; then
-    echo "timestamp,soc_temp_c,pmic_temp_c,load_1m,arm_freq_mhz,throttled_hex,top_proc,top_cpu_pct" > "$LOG_FILE"
+# Write temperature log (mode temp|both)
+if [[ "$WANT_TEMP" == "true" ]]; then
+    if [[ ! -s "$LOG_FILE" ]]; then
+        echo "timestamp,soc_temp_c,pmic_temp_c,load_1m,arm_freq_mhz,throttled_hex,top_proc,top_cpu_pct" > "$LOG_FILE"
+    fi
+    echo "$CSV_LINE" >> "$LOG_FILE"
 fi
 
-# Append entry atomically
-echo "$CSV_LINE" >> "$LOG_FILE"
+# Write power log (mode power|both)
+if [[ "$WANT_POWER" == "true" ]]; then
+    POWER_DIR="$(dirname "$POWER_LOG")"
+    mkdir -p "$POWER_DIR"
+    if [[ ! -s "$POWER_LOG" ]]; then
+        echo "timestamp,pmic_w,wall_w" > "$POWER_LOG"
+    fi
+    echo "$POWER_LINE" >> "$POWER_LOG"
+fi
 
 # --- Spike-triggered detailed process snapshot (5C jump over daily baseline) ---
 # Configurable via env (sane defaults for bare RPi5 VPS use):
@@ -136,62 +211,64 @@ echo "$CSV_LINE" >> "$LOG_FILE"
 #   SPIKE_COOLDOWN_SEC default 600 (max 1 snapshot per 10 min)
 #   SPIKE_EMA_ALPHA   default 0.15 (baseline adapts through the day)
 # Test hooks: FAKE_SOC_TEMP (above), FAKE_TOP_DETAIL ("comm|cpu|mem|args")
-SPIKE_STATE_FILE="${SPIKE_STATE_FILE:-/tmp/rpi5_temp_state_${UID:-0}}"
-SPIKE_LOG="${SPIKE_LOG:-$(dirname "$LOG_FILE")/spikes.csv}"
-SPIKE_DELTA="${SPIKE_DELTA:-5.0}"
-SPIKE_MIN_TEMP="${SPIKE_MIN_TEMP:-60.0}"
-SPIKE_COOLDOWN_SEC="${SPIKE_COOLDOWN_SEC:-600}"
-SPIKE_EMA_ALPHA="${SPIKE_EMA_ALPHA:-0.15}"
+if [[ "$WANT_TEMP" == "true" ]]; then
+    SPIKE_STATE_FILE="${SPIKE_STATE_FILE:-/tmp/rpi5_temp_state_${UID:-0}}"
+    SPIKE_LOG="${SPIKE_LOG:-$(dirname "$LOG_FILE")/spikes.csv}"
+    SPIKE_DELTA="${SPIKE_DELTA:-5.0}"
+    SPIKE_MIN_TEMP="${SPIKE_MIN_TEMP:-60.0}"
+    SPIKE_COOLDOWN_SEC="${SPIKE_COOLDOWN_SEC:-600}"
+    SPIKE_EMA_ALPHA="${SPIKE_EMA_ALPHA:-0.15}"
 
-NOW_EPOCH="$(date +%s)"
-BASELINE=""
-LAST_SPIKE="0"
-if [[ -r "$SPIKE_STATE_FILE" ]]; then
-    # shellcheck disable=SC2162
-    read BASELINE LAST_SPIKE < "$SPIKE_STATE_FILE" || true
-fi
-if [[ -z "$BASELINE" ]]; then
-    BASELINE="$SOC_TEMP"
-fi
-if [[ -z "$LAST_SPIKE" ]]; then
+    NOW_EPOCH="$(date +%s)"
+    BASELINE=""
     LAST_SPIKE="0"
-fi
+    if [[ -r "$SPIKE_STATE_FILE" ]]; then
+        # shellcheck disable=SC2162
+        read BASELINE LAST_SPIKE < "$SPIKE_STATE_FILE" || true
+    fi
+    if [[ -z "$BASELINE" ]]; then
+        BASELINE="$SOC_TEMP"
+    fi
+    if [[ -z "$LAST_SPIKE" ]]; then
+        LAST_SPIKE="0"
+    fi
 
-IS_HOT="$(awk -v c="$SOC_TEMP" -v m="$SPIKE_MIN_TEMP" 'BEGIN{print (c+0 >= m+0)}')"
-DELTA="$(awk -v c="$SOC_TEMP" -v b="$BASELINE" 'BEGIN{printf "%.1f", (c+0)-(b+0)}')"
-IS_JUMP="$(awk -v d="$DELTA" -v t="$SPIKE_DELTA" 'BEGIN{print (d+0 >= t+0)}')"
-COOLDOWN_OK="$([ $(( NOW_EPOCH - LAST_SPIKE )) -ge "$SPIKE_COOLDOWN_SEC" ] && echo 1 || echo 0)"
+    IS_HOT="$(awk -v c="$SOC_TEMP" -v m="$SPIKE_MIN_TEMP" 'BEGIN{print (c+0 >= m+0)}')"
+    DELTA="$(awk -v c="$SOC_TEMP" -v b="$BASELINE" 'BEGIN{printf "%.1f", (c+0)-(b+0)}')"
+    IS_JUMP="$(awk -v d="$DELTA" -v t="$SPIKE_DELTA" 'BEGIN{print (d+0 >= t+0)}')"
+    COOLDOWN_OK="$([ $(( NOW_EPOCH - LAST_SPIKE )) -ge "$SPIKE_COOLDOWN_SEC" ] && echo 1 || echo 0)"
 
-if [[ "$IS_HOT" == "1" && "$IS_JUMP" == "1" && "$COOLDOWN_OK" == "1" ]]; then
-    # Build compact top-process detail (commas stripped to keep CSV valid)
-    if [[ -n "${FAKE_TOP_DETAIL:-}" ]]; then
-        TOP_DETAIL="$(echo "$FAKE_TOP_DETAIL" | tr ',' ';' | cut -c1-400)"
+    if [[ "$IS_HOT" == "1" && "$IS_JUMP" == "1" && "$COOLDOWN_OK" == "1" ]]; then
+        # Build compact top-process detail (commas stripped to keep CSV valid)
+        if [[ -n "${FAKE_TOP_DETAIL:-}" ]]; then
+            TOP_DETAIL="$(echo "$FAKE_TOP_DETAIL" | tr ',' ';' | cut -c1-400)"
+        else
+            TOP_DETAIL="$(ps -eo comm,%cpu,%mem,args --sort=-%cpu 2>/dev/null | sed -n '2,6p' | awk '{c=$1; cpu=$2; mem=$3; $1=$2=$3=""; sub(/^ +/,""); args=substr($0,1,80); gsub(/,/,";"); printf "%s(%s%%|mem:%s%%|%s);", c, cpu, mem, args}' | tr ',' ';' | cut -c1-500 || true)"
+            [[ -z "$TOP_DETAIL" ]] && TOP_DETAIL="${TOP_PROC}(${TOP_CPU}%)"
+        fi
+        # Culprit guess: first known app keyword in detail (lowercased), else top comm
+        LOWER_DETAIL="$(echo "$TOP_DETAIL" | tr '[:upper:]' '[:lower:]')"
+        CULPRIT="$TOP_PROC"
+        for _app in ollama hermes opencode tailscaled docker apt; do
+            if [[ "$LOWER_DETAIL" == *"$_app"* ]]; then CULPRIT="$_app"; break; fi
+        done
+        SPIKE_DIR="$(dirname "$SPIKE_LOG")"
+        mkdir -p "$SPIKE_DIR"
+        if [[ ! -s "$SPIKE_LOG" ]]; then
+            echo "timestamp,soc_temp_c,baseline_temp_c,delta_c,load_1m,culprit_app,top_processes_detail" > "$SPIKE_LOG"
+        fi
+        echo "${TIMESTAMP},${SOC_TEMP},${BASELINE},${DELTA},${LOAD_1M},${CULPRIT},${TOP_DETAIL}" >> "$SPIKE_LOG"
+        # Freeze baseline during spike (don't let spike drag baseline up), record trigger time (atomic write)
+        _tmp_state="$(mktemp "$(dirname "$SPIKE_STATE_FILE")/state.XXXXXX")"
+        echo "$BASELINE $NOW_EPOCH" > "$_tmp_state"
+        mv "$_tmp_state" "$SPIKE_STATE_FILE"
     else
-        TOP_DETAIL="$(ps -eo comm,%cpu,%mem,args --sort=-%cpu 2>/dev/null | sed -n '2,6p' | awk '{c=$1; cpu=$2; mem=$3; $1=$2=$3=""; sub(/^ +/,""); args=substr($0,1,80); gsub(/,/,";"); printf "%s(%s%%|mem:%s%%|%s);", c, cpu, mem, args}' | tr ',' ';' | cut -c1-500 || true)"
-        [[ -z "$TOP_DETAIL" ]] && TOP_DETAIL="${TOP_PROC}(${TOP_CPU}%)"
+        # Normal sample: drift EMA baseline toward current temp (adapts through the day)
+        BASELINE="$(awk -v c="$SOC_TEMP" -v b="$BASELINE" -v a="$SPIKE_EMA_ALPHA" 'BEGIN{printf "%.2f", a*(c+0)+(1-a)*(b+0)}')"
+        STATE_DIR="$(dirname "$SPIKE_STATE_FILE")"
+        mkdir -p "$STATE_DIR" 2>/dev/null || true
+        _tmp_state="$(mktemp "$STATE_DIR/state.XXXXXX")"
+        echo "$BASELINE $LAST_SPIKE" > "$_tmp_state"
+        mv "$_tmp_state" "$SPIKE_STATE_FILE"
     fi
-    # Culprit guess: first known app keyword in detail (lowercased), else top comm
-    LOWER_DETAIL="$(echo "$TOP_DETAIL" | tr '[:upper:]' '[:lower:]')"
-    CULPRIT="$TOP_PROC"
-    for _app in ollama hermes opencode tailscaled docker apt; do
-        if [[ "$LOWER_DETAIL" == *"$_app"* ]]; then CULPRIT="$_app"; break; fi
-    done
-    SPIKE_DIR="$(dirname "$SPIKE_LOG")"
-    mkdir -p "$SPIKE_DIR"
-    if [[ ! -s "$SPIKE_LOG" ]]; then
-        echo "timestamp,soc_temp_c,baseline_temp_c,delta_c,load_1m,culprit_app,top_processes_detail" > "$SPIKE_LOG"
-    fi
-    echo "${TIMESTAMP},${SOC_TEMP},${BASELINE},${DELTA},${LOAD_1M},${CULPRIT},${TOP_DETAIL}" >> "$SPIKE_LOG"
-    # Freeze baseline during spike (don't let spike drag baseline up), record trigger time (atomic write)
-    _tmp_state="$(mktemp "$(dirname "$SPIKE_STATE_FILE")/state.XXXXXX")"
-    echo "$BASELINE $NOW_EPOCH" > "$_tmp_state"
-    mv "$_tmp_state" "$SPIKE_STATE_FILE"
-else
-    # Normal sample: drift EMA baseline toward current temp (adapts through the day)
-    BASELINE="$(awk -v c="$SOC_TEMP" -v b="$BASELINE" -v a="$SPIKE_EMA_ALPHA" 'BEGIN{printf "%.2f", a*(c+0)+(1-a)*(b+0)}')"
-    STATE_DIR="$(dirname "$SPIKE_STATE_FILE")"
-    mkdir -p "$STATE_DIR" 2>/dev/null || true
-    _tmp_state="$(mktemp "$STATE_DIR/state.XXXXXX")"
-    echo "$BASELINE $LAST_SPIKE" > "$_tmp_state"
-    mv "$_tmp_state" "$SPIKE_STATE_FILE"
 fi

@@ -7,6 +7,7 @@ import csv
 import sys
 import os
 import math
+import datetime
 from collections import Counter
 
 DECISION_NO_COOLER = "No Cooler Needed (Your current bare setup is fine)"
@@ -331,70 +332,187 @@ def determine_verdict(stats, throttle_summary, buckets):
     }
 
 
-def main():
-    log_file = sys.argv[1] if len(sys.argv) > 1 else '/home/berry5/projects/temp/temp_log.csv'
+# ---------------------------------------------------------------------------
+# PiScope power / energy / battery helpers (additive: legacy API untouched)
+# ---------------------------------------------------------------------------
 
-    # Check if file exists
-    if not os.path.exists(log_file):
-        print("=" * 65)
-        print(" ERROR: Log file not found")
-        print("=" * 65)
-        print(f" Expected file: {log_file}")
-        print("")
-        print("No temperature data has been collected yet.")
-        print("")
-        print("To start collecting data, choose one of the following:")
-        print("")
-        print("  Quick test (2 minutes):")
-        print("    ./collect.sh --dry-run")
-        print("    ./collect.sh temp_log.csv")
-        print("    ./collect.sh temp_log.csv")
-        print("    python3 analyze.py temp_log.csv")
-        print("")
-        print("  1-hour test with progress:")
-        print("    ./run-test.sh 60")
-        print("")
-        print("  Custom duration test (e.g., 8 hours):")
-        print("    ./run-test.sh 480")
-        print("")
-        print("  Week-long automatic monitoring:")
-        print("    crontab -e")
-        print("    Add these lines:")
-        print("      @reboot /path/to/collect.sh /path/to/temp_log.csv")
-        print("      * * * * * /path/to/collect.sh /path/to/temp_log.csv")
-        print("")
-        print("For more information, see README.md")
-        print("=" * 65)
-        sys.exit(1)
+def pmic_to_wall(pmic_w, factor=1.0):
+    """Estimate wall power from PMIC rail power using a linear factor."""
+    return float(pmic_w) * float(factor)
 
+
+def calibrated_wall_w(pmic_w, slope=1.0, intercept=0.0):
+    """Estimate wall power using a full linear calibration."""
+    return float(slope) * float(pmic_w) + float(intercept)
+
+
+def _iso_epoch(timestamp):
+    """Parse an ISO-8601 UTC (``...Z``) timestamp to epoch seconds."""
+    if not timestamp:
+        return 0.0
+    text = str(timestamp).strip()
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    try:
+        dt = datetime.datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return float(dt.timestamp())
+    except (ValueError, TypeError, OverflowError):
+        return 0.0
+
+
+def parse_power_log_string(csv_text):
+    """Parse ``timestamp,pmic_w,wall_w`` CSV text into record dicts."""
+    records = []
+    if not csv_text or not csv_text.strip():
+        return records
+    reader = csv.DictReader(csv_text.strip().splitlines())
+    for row in reader:
+        try:
+            timestamp = (row.get('timestamp') or '').strip()
+            pmic_w = float(row['pmic_w'])
+            wall_w = float(row['wall_w'])
+        except (ValueError, TypeError, KeyError, AttributeError):
+            continue
+        records.append({
+            'timestamp': timestamp,
+            'epoch': _iso_epoch(timestamp),
+            'pmic_w': pmic_w,
+            'wall_w': wall_w,
+        })
+    return records
+
+
+def parse_power_log(filepath):
+    """Read a power log from disk; missing/unreadable file -> empty list."""
+    if not filepath or not os.path.exists(filepath):
+        return []
+    try:
+        with open(filepath, 'r', newline='') as f:
+            return parse_power_log_string(f.read())
+    except OSError:
+        return []
+
+
+def energy_wh(samples, window_minutes=None):
+    """Left-Riemann energy in Wh from ``(epoch, watts)`` pairs or records.
+
+    The final sample contributes no trailing interval.  ``window_minutes``
+    keeps only samples at/after ``last_epoch - window_minutes * 60``.
+    """
+    usable = []
+    for item in samples or []:
+        try:
+            if isinstance(item, dict):
+                epoch = float(item['epoch'])
+                watts = float(item['wall_w'])
+            else:
+                epoch, watts = float(item[0]), float(item[1])
+        except (KeyError, TypeError, ValueError, IndexError):
+            continue
+        usable.append((epoch, watts))
+
+    if len(usable) < 2:
+        return 0.0
+
+    if window_minutes is not None:
+        last_epoch = max(epoch for epoch, _ in usable)
+        cutoff = last_epoch - float(window_minutes) * 60.0
+        usable = [(epoch, watts) for epoch, watts in usable if epoch >= cutoff]
+        if len(usable) < 2:
+            return 0.0
+
+    total_watt_seconds = sum(
+        watts * (usable[i + 1][0] - epoch)
+        for i, (epoch, watts) in enumerate(usable[:-1])
+    )
+    return total_watt_seconds / 3600.0
+
+
+def cost_dollars(energy_wh_value, rate_per_kwh=0.15):
+    """Cost in dollars for ``energy_wh_value`` Wh at ``rate_per_kwh`` $/kWh."""
+    return float(energy_wh_value) / 1000.0 * float(rate_per_kwh)
+
+
+def battery_runtime_hours(capacity_wh, power_w):
+    """Runtime in hours for a battery at a constant power draw."""
+    if float(power_w) <= 0:
+        return 0.0
+    return float(capacity_wh) / float(power_w)
+
+
+def battery_estimate(capacity_wh, avg_power_w, p95_power_w):
+    """Runtime estimates at average and at conservative (p95) power."""
+    avg_h = battery_runtime_hours(capacity_wh, avg_power_w)
+    p95_h = battery_runtime_hours(capacity_wh, p95_power_w)
+    return {
+        'capacity_wh': float(capacity_wh),
+        'avg_power_w': float(avg_power_w),
+        'p95_power_w': float(p95_power_w),
+        'avg_hours': avg_h,
+        'p95_hours': p95_h,
+        'conservative_hours': p95_h,
+    }
+
+
+def _power_section_lines(power_records, config):
+    """Build the appended POWER / ENERGY / BATTERY report section."""
+    cfg = config or {}
+    rate = float(cfg.get('rate_per_kwh', 0.15))
+    battery = float(cfg.get('battery_wh', 45.0))
+    windows = cfg.get('energy_windows_min') or [60, 120]
+
+    watts = [r['wall_w'] for r in power_records]
+    wall_stats = calculate_stats(watts)
+    last = power_records[-1]
+    full_wh = energy_wh(power_records)
+    cost = cost_dollars(full_wh, rate)
+
+    if wall_stats and wall_stats['count'] >= 2:
+        avg_w = wall_stats['avg']
+        p95_w = wall_stats['p95']
+    else:
+        avg_w = p95_w = watts[0] if watts else 0.0
+    estimate = battery_estimate(battery, avg_w, p95_w)
+
+    lines = [
+        '-' * 65,
+        ' POWER / ENERGY / BATTERY:',
+        f"   Live PMIC sum          : {last['pmic_w']:6.2f} W"
+        f"   wall est. {last['wall_w']:.2f} W",
+    ]
+    for minutes in windows:
+        wh = energy_wh(power_records, window_minutes=float(minutes))
+        lines.append(f'   Energy ({minutes:g} min window) : {wh:.2f} Wh')
+    lines.extend([
+        f'   Energy (full log)      : {full_wh:.2f} Wh',
+        f'   Cost (full log)        : ${cost:.5f} @ ${rate:.2f}/kWh',
+        f'   Battery ({battery:g} Wh)     : ~{estimate["avg_hours"]:.1f} h @ avg '
+        f'{avg_w:.2f} W  ·  ~{estimate["conservative_hours"]:.1f} h @ p95 '
+        f'{p95_w:.2f} W (conservative)',
+        '   NOTE: PMIC excludes USB/fan/regulator losses; set a wall factor for accuracy.',
+    ])
+    return lines
+
+
+def build_report(log_file, power_log_file=None, config=None, range_spec=None):
+    """Build and return the complete text report (does not print).
+
+    Preserves every legacy README report field and, when a readable power log
+    is supplied, appends a POWER / ENERGY / BATTERY section.
+    """
     records = parse_csv_file(log_file)
+    lines = []
+    lines.append('=' * 65)
+    lines.append(' THERMALSCOPE - TEMPERATURE & COOLER DECISION REPORT')
+    lines.append('=' * 65)
 
     if not records:
-        print("=" * 65)
-        print(" ERROR: No valid data in log file")
-        print("=" * 65)
-        print(f" Log file: {log_file}")
-        print("")
-        print("The file exists but contains no valid temperature data.")
-        print("This could mean:")
-        print("  - The file is empty (header only)")
-        print("  - All data rows are malformed")
-        print("  - Collection hasn't started yet")
-        print("")
-        print("To reset and start fresh:")
-        print("  ./reset.sh")
-        print("")
-        print("To start collecting data:")
-        print("  ./run-test.sh 60  # 1-hour test")
-        print("  Or for manual collection:")
-        print("    ./collect.sh temp_log.csv")
-        print("    (wait 60 seconds)")
-        print("    ./collect.sh temp_log.csv")
-        print("    python3 analyze.py temp_log.csv")
-        print("")
-        print("For more information, see README.md")
-        print("=" * 65)
-        sys.exit(1)
+        lines.append(f' Log File          : {log_file}')
+        lines.append(' No valid temperature data collected yet.')
+        lines.append('=' * 65)
+        return '\n'.join(lines) + '\n'
 
     soc_temps = [r['soc_temp'] for r in records]
     pmic_temps = [r['pmic_temp'] for r in records if r['pmic_temp'] is not None]
@@ -411,88 +529,192 @@ def main():
     throttle_summary = summarize_throttling(records)
     verdict = determine_verdict(stats, throttle_summary, buckets)
 
-    # Top processes frequency
     proc_counter = Counter(r['top_proc'] for r in records)
     top_procs = proc_counter.most_common(5)
 
-    # Spike attribution (frequency-weighted context for the verdict)
-    spike_file = os.path.join(os.path.dirname(os.path.abspath(log_file)), 'spikes.csv')
+    spike_file = os.path.join(
+        os.path.dirname(os.path.abspath(log_file)), 'spikes.csv')
     spikes = parse_spikes_file(spike_file)
     grouped = group_spikes_by_app(spikes)
-    freq_note = frequency_weighted_note(spikes, stats['count'])
-    verdict['reasons'].append(freq_note)
+    verdict['reasons'].append(
+        frequency_weighted_note(spikes, stats['count']))
 
-    print("=" * 65)
-    print(" THERMALSCOPE - TEMPERATURE & COOLER DECISION REPORT")
-    print("=" * 65)
-    print(f" Log File          : {log_file}")
-    print(f" Total Samples     : {stats['count']}")
-    print(f" Time Span         : {records[0]['timestamp']} to {records[-1]['timestamp']}")
-    print("-" * 65)
-    print(" SoC TEMPERATURE STATS (°C):")
-    print(f"   Min             : {stats['min']:.1f}°C")
-    print(f"   Average         : {stats['avg']:.1f}°C (± {stats['std_dev']:.1f}°C std dev)")
-    print(f"   Median          : {stats['median']:.1f}°C")
-    print(f"   95th Percentile : {stats['p95']:.1f}°C")
-    print(f"   Max             : {stats['max']:.1f}°C")
+    lines.append(f' Log File          : {log_file}')
+    if range_spec:
+        lines.append(f' Range             : {range_spec}')
+    lines.append(f" Total Samples     : {stats['count']}")
+    lines.append(
+        f" Time Span         : {records[0]['timestamp']} to {records[-1]['timestamp']}")
+    lines.append('-' * 65)
+    lines.append(' SoC TEMPERATURE STATS (°C):')
+    lines.append(f"   Min             : {stats['min']:.1f}°C")
+    lines.append(
+        f"   Average         : {stats['avg']:.1f}°C "
+        f"(± {stats['std_dev']:.1f}°C std dev)")
+    lines.append(f"   Median          : {stats['median']:.1f}°C")
+    lines.append(f"   95th Percentile : {stats['p95']:.1f}°C")
+    lines.append(f"   Max             : {stats['max']:.1f}°C")
     if pmic_stats:
-        print(f" PMIC TEMP (Avg)   : {pmic_stats['avg']:.1f}°C (Max: {pmic_stats['max']:.1f}°C)")
-    print(f" CPU LOAD (1m Avg) : {load_stats['avg']:.2f} (Max: {load_stats['max']:.2f})")
-    print(f" ARM FREQUENCY (Avg): {freq_stats['avg']:.0f} MHz (Max: {freq_stats['max']:.0f} MHz)")
-    print("-" * 65)
-    print(" TEMPERATURE DISTRIBUTION:")
+        lines.append(
+            f" PMIC TEMP (Avg)   : {pmic_stats['avg']:.1f}°C "
+            f"(Max: {pmic_stats['max']:.1f}°C)")
+    lines.append(
+        f" CPU LOAD (1m Avg) : {load_stats['avg']:.2f} "
+        f"(Max: {load_stats['max']:.2f})")
+    lines.append(
+        f" ARM FREQUENCY (Avg): {freq_stats['avg']:.0f} MHz "
+        f"(Max: {freq_stats['max']:.0f} MHz)")
+    lines.append('-' * 65)
+    lines.append(' TEMPERATURE DISTRIBUTION:')
     for b_name, b_info in [
-        ("Under 60°C (Cool)", buckets['under_60']),
-        ("60°C - 70°C (Normal)", buckets['60_to_70']),
-        ("70°C - 80°C (Warm)", buckets['70_to_80']),
-        ("80°C - 85°C (Soft Throttle Zone)", buckets['80_to_85']),
-        ("Over 85°C (Hard Throttle / Critical)", buckets['over_85'])
+        ('Under 60°C (Cool)', buckets['under_60']),
+        ('60°C - 70°C (Normal)', buckets['60_to_70']),
+        ('70°C - 80°C (Warm)', buckets['70_to_80']),
+        ('80°C - 85°C (Soft Throttle Zone)', buckets['80_to_85']),
+        ('Over 85°C (Hard Throttle / Critical)', buckets['over_85']),
     ]:
-        bar_len = int(b_info['pct'] / 2)
-        bar = '#' * bar_len
-        print(f"   {b_name:<35} : {b_info['count']:5d} ({b_info['pct']:5.2f}%) {bar}")
-    print("-" * 65)
-    print(" ARM FREQUENCY DISTRIBUTION:")
+        bar = '#' * int(b_info['pct'] / 2)
+        lines.append(
+            f"   {b_name:<35} : {b_info['count']:5d} "
+            f"({b_info['pct']:5.2f}%) {bar}")
+    lines.append('-' * 65)
+    lines.append(' ARM FREQUENCY DISTRIBUTION:')
     for b_name, b_info in [
-        ("2400 MHz (Max)", freq_buckets['2400_mhz']),
-        ("1500 MHz (Throttled)", freq_buckets['1500_mhz']),
-        ("1000 MHz (Throttled)", freq_buckets['1000_mhz']),
-        ("750 MHz (Throttled)", freq_buckets['750_mhz']),
-        ("600 MHz (Min)", freq_buckets['600_mhz']),
-        ("Other/Unknown", freq_buckets['other'])
+        ('2400 MHz (Max)', freq_buckets['2400_mhz']),
+        ('1500 MHz (Throttled)', freq_buckets['1500_mhz']),
+        ('1000 MHz (Throttled)', freq_buckets['1000_mhz']),
+        ('750 MHz (Throttled)', freq_buckets['750_mhz']),
+        ('600 MHz (Min)', freq_buckets['600_mhz']),
+        ('Other/Unknown', freq_buckets['other']),
     ]:
-        bar_len = int(b_info['pct'] / 2)
-        bar = '#' * bar_len
-        print(f"   {b_name:<30} : {b_info['count']:5d} ({b_info['pct']:5.2f}%) {bar}")
-    print("-" * 65)
-    print(" PERFORMANCE IMPACT ANALYSIS:")
+        bar = '#' * int(b_info['pct'] / 2)
+        lines.append(
+            f"   {b_name:<30} : {b_info['count']:5d} "
+            f"({b_info['pct']:5.2f}%) {bar}")
+    lines.append('-' * 65)
+    lines.append(' PERFORMANCE IMPACT ANALYSIS:')
     if perf_loss:
-        print(f"   Average Frequency    : {perf_loss['avg_freq_mhz']:.0f} MHz / {perf_loss['max_freq_mhz']:.0f} MHz max")
-        print(f"   Performance Loss    : {perf_loss['performance_loss_pct']:.1f}% slower than max capability")
-        print(f"   Effective Speed     : {perf_loss['effective_speed_factor']:.1%} of maximum")
-        print(f"   Time Impact         : For a 1-hour task, thermal throttling added ~{60 * (1 / perf_loss['effective_speed_factor'] - 1):.0f} minutes")
+        lines.append(
+            f"   Average Frequency    : {perf_loss['avg_freq_mhz']:.0f} MHz / "
+            f"{perf_loss['max_freq_mhz']:.0f} MHz max")
+        lines.append(
+            f"   Performance Loss    : "
+            f"{perf_loss['performance_loss_pct']:.1f}% slower than max capability")
+        lines.append(
+            f"   Effective Speed     : "
+            f"{perf_loss['effective_speed_factor']:.1%} of maximum")
+        time_impact = 60 * (1 / perf_loss['effective_speed_factor'] - 1)
+        lines.append(
+            f'   Time Impact         : For a 1-hour task, thermal throttling added '
+            f'~{time_impact:.0f} minutes')
     else:
-        print("   Insufficient frequency data for analysis.")
-    print("-" * 65)
-    print(" TOP PROCESSES (Most frequently observed top CPU consumer):")
+        lines.append('   Insufficient frequency data for analysis.')
+    lines.append('-' * 65)
+    lines.append(
+        ' TOP PROCESSES (Most frequently observed top CPU consumer):')
     for proc, count in top_procs:
         pct_of_time = (count / stats['count']) * 100
-        print(f"   {proc:<20} : {count:5d} samples ({pct_of_time:5.1f}%)")
-    print("-" * 65)
-    print(f" SPIKE ATTRIBUTION (5°C+ jumps, {len(spikes)} events):")
+        lines.append(f'   {proc:<20} : {count:5d} samples ({pct_of_time:5.1f}%)')
+    lines.append('-' * 65)
+    lines.append(f" SPIKE ATTRIBUTION (5°C+ jumps, {len(spikes)} events):")
     if spikes:
-        for app, info in sorted(grouped.items(), key=lambda kv: kv[1]['count'], reverse=True)[:5]:
-            print(f"   {app:<20} : {info['count']:5d} spikes (peak {info['max_temp']:.1f}°C, +{info['max_delta']:.1f}°C)")
+        for app, info in sorted(
+                grouped.items(), key=lambda kv: kv[1]['count'], reverse=True)[:5]:
+            lines.append(
+                f"   {app:<20} : {info['count']:5d} spikes "
+                f"(peak {info['max_temp']:.1f}°C, +{info['max_delta']:.1f}°C)")
     else:
-        print("   No spikes recorded yet.")
-    print("-" * 65)
-    print(" FINAL VERDICT & RECOMMENDATION:")
-    print(f"   => {verdict['decision']}")
-    print("   Reasons:")
-    for r in verdict['reasons']:
-        print(f"      - {r}")
-    print("=" * 65)
+        lines.append('   No spikes recorded yet.')
+    lines.append('-' * 65)
+    lines.append(' FINAL VERDICT & RECOMMENDATION:')
+    lines.append(f"   => {verdict['decision']}")
+    lines.append('   Reasons:')
+    for reason in verdict['reasons']:
+        lines.append(f'      - {reason}')
+
+    power_records = parse_power_log(power_log_file) if power_log_file else []
+    if power_records:
+        lines.extend(_power_section_lines(power_records, config))
+
+    lines.append('=' * 65)
+    return '\n'.join(lines) + '\n'
+
+
+def main(argv=None):
+    """CLI entry point.  Prints the report built by :func:`build_report`."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    power_log_file = None
+    range_spec = None
+    log_file = None
+    positional = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == '--power-log' and i + 1 < len(args):
+            power_log_file = args[i + 1]
+            i += 2
+            continue
+        if arg.startswith('--power-log='):
+            power_log_file = arg.split('=', 1)[1]
+        elif arg == '--range' and i + 1 < len(args):
+            range_spec = args[i + 1]
+            i += 2
+            continue
+        elif arg.startswith('--range='):
+            range_spec = arg.split('=', 1)[1]
+        elif arg in ('--summary', '-s'):
+            pass
+        elif not arg.startswith('-'):
+            positional.append(arg)
+        i += 1
+    if positional:
+        log_file = positional[0]
+    if log_file is None:
+        log_file = '/home/berry5/projects/temp/temp_log.csv'
+
+    if not os.path.exists(log_file):
+        print('=' * 65)
+        print(' ERROR: Log file not found')
+        print('=' * 65)
+        print(f' Expected file: {log_file}')
+        print('')
+        print('No temperature data has been collected yet.')
+        print('')
+        print('To start collecting data, choose one of the following:')
+        print('')
+        print('  Quick test (2 minutes):')
+        print('    ./collect.sh --dry-run')
+        print('    ./collect.sh temp_log.csv')
+        print('    python3 analyze.py temp_log.csv')
+        print('')
+        print('  1-hour test with progress:')
+        print('    ./run-test.sh 60')
+        print('')
+        print('  Custom duration test (e.g., 8 hours):')
+        print('    ./run-test.sh 480')
+        print('')
+        print('For more information, see README.md')
+        print('=' * 65)
+        return 1
+
+    if power_log_file is None:
+        candidate = os.path.join(
+            os.path.dirname(os.path.abspath(log_file)), 'power_log.csv')
+        if os.path.exists(candidate):
+            power_log_file = candidate
+
+    config = None
+    try:
+        import piscope_config
+        config = piscope_config.load_config()
+    except Exception:
+        config = None
+
+    sys.stdout.write(build_report(
+        log_file, power_log_file=power_log_file,
+        config=config, range_spec=range_spec))
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

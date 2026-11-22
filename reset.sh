@@ -20,6 +20,14 @@ else
     echo "temp_log.csv not found (already clean)"
 fi
 
+# Delete power log file
+if [[ -f "power_log.csv" ]]; then
+    echo "Removing power_log.csv..."
+    rm power_log.csv
+else
+    echo "power_log.csv not found (already clean)"
+fi
+
 # Delete spike log file
 if [[ -f "spikes.csv" ]]; then
     echo "Removing spikes.csv..."
