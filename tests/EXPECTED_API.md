@@ -478,3 +478,201 @@ The tests read `README.md` from the repo root. It must be rewritten so that:
   `wall_factor`).
 * `piscope_cli.main(['view', LOG, '--range', '7d'])` calls
   `analyze.build_report(..., range_spec='7d')` (assert via mock.patch).
+
+---
+
+# §14 — REGRESSION SUITE (2026-11-21 QA audit)
+
+This section is **authoritative** for the regression tests added in
+`test_regression_tui.py`, `test_regression_report.py`,
+`test_regression_collector.py` and the strengthened
+`test_config.py::test_no_real_home_write`.  These tests target ten real
+bugs/gaps that the original 198 tests missed.  Each helper below must be a
+plain, importable function (no curses/textual required to import the module).
+Where a helper is introduced, the interactive `_tui_loop` / `build_report` /
+`collect.sh` code path **must actually call it** — a helper that exists but is
+not wired in is not a fix.
+
+## 14.1 Palette Enter runs the highlighted command (bug 1)
+
+```python
+# piscope_tui.py
+def resolve_palette_enter(buffer, filtered=None, cmd_index=0,
+                          parse_fn=None) -> str: ...
+```
+
+* `filtered` is the list of command dicts currently shown (the result of
+  `piscope_commands.filter_commands(buffer)`); `cmd_index` is the highlighted
+  index into it and may be out of range.
+* If `str(buffer).strip()` is a **valid complete command** according to
+  `piscope_commands.parse_command` (or `parse_fn`), return that text verbatim —
+  this preserves design §12 flows such as typing
+  `/config set battery_wh 60` and pressing Enter.
+* Otherwise (buffer is a filter fragment such as `re`), return the **name of
+  the highlighted entry**: `filtered[clamp(cmd_index)]['name']`.  A bare `re`
+  with `/reset` highlighted must therefore yield `/reset`, never an
+  "Unknown command: re" error.
+* `cmd_index` is clamped to `[0, len(filtered)-1]`; negative indices become 0
+  after clamping.  With an empty `filtered` and no valid buffer, return `'?'`
+  (help).  Never raise `IndexError`.
+
+## 14.2 Section anchoring must keep the selected row visible (bug 2)
+
+```python
+# piscope_tui.py — change the EXISTING pure helper, no new API needed
+def scroll_to_section(rows, index, scroll, viewport_height) -> int: ...
+```
+
+* It still returns the selected section's index when the selected row is a
+  section, or the nearest preceding section index otherwise (existing
+  `test_tui_structure` expectations stay valid).
+* **New guarantee:** the returned scroll must never hide the selected row.
+  After the TUI's PgUp/PgDn path (`move_selection(...)` followed by
+  `scroll_to_section(...)`), the invariant
+  `0 <= scroll <= index < scroll + viewport_height` must hold for **every**
+  direction (`up`, `down`, `home`, `end`, `page_up`, `page_down`) and every
+  starting position.  Concretely, clamp the anchored value so that
+  `scroll >= index - viewport_height + 1` while keeping it as small as
+  possible: 20 rows, sections at 0/5/10/15, viewport 4, PgDn from 0 must end
+  at `(index=4, scroll=1)` (rows 1–4), **not** scroll 0; PgUp from
+  `(18, 16)` must end at `(14, 11)`, not `(14, 10)`.
+
+## 14.3 `/range` must filter time-series data (bug 3)
+
+```python
+# analyze.py
+def filter_records_by_range(records, range_spec, now=None) -> list[dict]: ...
+```
+
+* `records` is a list of dicts carrying either an `epoch` (float seconds) or a
+  `timestamp` (ISO-8601 `...Z`); parse timestamps when `epoch` is absent.
+* `now` may be an epoch float or an ISO timestamp; when omitted it is the
+  **latest record epoch** (deterministic, no wall-clock dependency).
+* Supported `range_spec` forms:
+  * relative duration `'30m'`, `'2h'`, `'24h'`, `'7d'`, `'30d'` — keep records
+    with `epoch >= now - duration`, **inclusive** of the boundary.  So with
+    daily records Nov 1…Nov 11 00:00Z, `'7d'` keeps Nov 4…Nov 11 (8 rows);
+    with 25 hourly records Nov 1 00:00…Nov 2 00:00, `'2h'` keeps the last 3.
+  * explicit date span `'YYYY-MM-DD..YYYY-MM-DD'` (inclusive whole UTC days);
+    `'2026-11-08..2026-11-10'` keeps exactly those 3 daily rows.
+  * `None` / `''` → return all records.
+  * Records with unusable timestamps are excluded when a range is active.
+* `analyze.build_report(log_file, power_log_file=..., config=...,
+  range_spec=...)` must **apply** this filter to both the temperature records
+  and the power-log records before computing any statistic, and the printed
+  `Total Samples` / `Time Span` lines must reflect the subset.  The `Range :
+  <spec>` label alone is not sufficient.  With the 11 daily rows above and
+  `'7d'`, the report must say `Total Samples     : 8` and
+  `2026-11-04T00:00:00Z to 2026-11-11T00:00:00Z`.  Power-log filtering must
+  change left-Riemann energy from 2616.00 Wh (all 11 rows) to 168.00 Wh
+  (8 rows in-window).
+
+## 14.4 Collector honours the TUI's power-log env var (bug 4)
+
+`collect.sh` must accept **both** `PISCOPE_POWER_LOG` (the variable
+`piscope_tui._persist_sample` sets) and the legacy `POWER_LOG`.  When only
+`PISCOPE_POWER_LOG` is set, the power CSV must be written there (header
+`timestamp,pmic_w,wall_w` plus the sampled row) and not to the default sibling
+`power_log.csv`.  When only `POWER_LOG` is set, current behaviour is preserved.
+All other paths remain overridable (`COLLECTOR_PID_FILE`, `SPIKE_STATE_FILE`,
+`SPIKE_LOG`, `FAKE_PMIC_ADC`, …) so tests never touch real files.
+
+## 14.5 Pure key → action mapping (bug 5)
+
+```python
+# piscope_tui.py
+def resolve_key_action(key, curses_mod=None) -> str | None: ...
+```
+
+* Returns the action string from `KEY_BINDINGS` for a raw key code **or** a
+  symbolic name.  `curses_mod` allows injecting a fake module (tests pass a
+  `SimpleNamespace` with `KEY_BTAB=353`, arrow codes, etc.), so no curses is
+  needed.
+* Raw TAB (`9` / `'\t'` / `'tab'`) → `KEY_BINDINGS['tab']` == `'next_tab'`;
+  Shift+Tab (`curses_mod.KEY_BTAB` / `'shift_tab'`) →
+  `KEY_BINDINGS['shift_tab']` == `'prev_tab'`.  The current TUI bug groups
+  TAB and KEY_BTAB with `KEY_LEFT`; `_tui_loop` must instead dispatch through
+  this helper so the two keys are distinct.  Arrow/Home/End/PgUp/PgDn codes
+  map to their declared actions as well.
+
+## 14.6 Report title (bug 6)
+
+The first report heading produced by `build_report` must contain `PiScope` and
+must still preserve the legacy substring `TEMPERATURE & COOLER DECISION
+REPORT`, e.g. `' PiScope - TEMPERATURE & COOLER DECISION REPORT'`.
+
+## 14.7 Config inline edit pre-fill (bug 7)
+
+```python
+# piscope_tui.py
+def start_config_edit(state, rows) -> dict: ...
+```
+
+* `rows` are the rows for the current tab and `state['index']` selects the row
+  to edit.  Return a **new** dict (input not mutated) with:
+  * `editing = True`;
+  * `buffer` = the current value parsed out of the selected row's displayed
+    text (the text between `[` and `]`, stripped) — e.g. a Config row showing
+    `render_interval_s: [ 2.0 ]` seeds `'2.0'`, and `mode: [ power ]` seeds
+    `'power'`;
+  * `cursor` = an integer position at the end of the seeded buffer (so the
+    cursor is exposed and visible while editing);
+  * all other state keys preserved.
+* `_tui_loop` must call this helper when Enter activates a Config data row
+  instead of unconditionally setting `buffer = ''`.
+
+## 14.8 Renderable palette with visible selection (bug 8)
+
+```python
+# piscope_tui.py
+def build_palette_view(filtered, cmd_index=0, limit=4) -> dict: ...
+```
+
+Returns `{'lines': list[str], 'index': int, 'start': int}`:
+* `lines` are the strings to draw, at most `limit`; the highlighted entry is
+  prefixed with `'>'`, every other entry with `' '`, and each line contains
+  the command's `name` and `description`.  Exactly one line is marked.
+* `index` is `cmd_index` clamped to `[0, len(filtered)-1]` (`0` when empty).
+* `start` is the first visible index: the **smallest** shift that keeps
+  `index` on screen, i.e. `min(max(0, index - limit + 1),
+  max(0, len(filtered) - limit))`.  With 12 commands, `index=6, limit=4` →
+  `start=3` and `/cron` is the marked last line; `index=999` → clamped to 11,
+  `start=8`, `/decision` marked.  Empty `filtered` → `{'lines': [],
+  'index': 0, 'start': 0}`.
+* `_render` must use these lines and `_tui_loop` must clamp `cmd_index` with
+  them so a selection can never be off-screen or out of range.
+
+## 14.9 Esc focuses the command bar (bug 9)
+
+```python
+# piscope_tui.py
+def handle_escape(state) -> dict: ...
+```
+
+* Returns a **new** dict (input not mutated) representing a real state
+  transition: `palette = True` and `command_focus = True`, `buffer = ''`,
+  `cmd_index = 0`, with all other keys preserved.  Setting only a status
+  string such as `'Esc: command bar focused'` is explicitly not a fix;
+  `_tui_loop` must dispatch Esc in normal navigation through this helper.
+
+## 14.10 Strengthened home-write guard (bug 10)
+
+`test_config.py::test_no_real_home_write` now points `HOME` at a temp dir
+before calling `save_config` with `PISCOPE_CONFIG_PATH` set, and asserts no
+`~/.config/piscope/config.json` (nor any `~/.config` tree) is created.  The
+current implementation already behaves correctly, so this test passes today;
+it exists to prevent a future regression.  No application change is needed
+for this item.
+
+## Test modules added
+
+| Module | Bugs |
+|---|---|
+| `tests/test_regression_tui.py` | 1, 2, 5, 7, 8, 9 |
+| `tests/test_regression_report.py` | 3, 6 |
+| `tests/test_regression_collector.py` | 4 |
+| `tests/test_config.py` (one test strengthened) | 10 |
+
+No changes to `run_tests.py`; new modules are auto-discovered.  No changes to
+`SEQUENTIAL_GROUPS.json` were needed: every new test uses temp dirs/env
+overrides and a private PID file, so parallel workers never clash.

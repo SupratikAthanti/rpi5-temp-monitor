@@ -89,9 +89,32 @@ class TestConfigPath(unittest.TestCase):
         self.assertEqual(loaded['render_interval_s'], 1.0)
 
     def test_no_real_home_write(self):
-        # config_path is redirected; saving must not create anything under ~.
-        cfgmod.save_config(dict(cfgmod.DEFAULT_CONFIG))
-        self.assertEqual(cfgmod.config_path(), self.path)
+        # Regression guard (audit item 10): the old version of this test merely
+        # re-checked config_path(), so a save_config() that ignored the env
+        # override and wrote to ~/.config/piscope/config.json went unnoticed.
+        # Point HOME at a temp dir FIRST so a regression can never touch the
+        # real home, then assert that nothing was written there.
+        old_home = os.environ.get('HOME')
+        with tempfile.TemporaryDirectory() as fake_home:
+            os.environ['HOME'] = fake_home
+            try:
+                legacy = os.path.join(fake_home, cfgmod.CONFIG_REL_PATH)
+                self.assertFalse(os.path.exists(legacy))
+                cfgmod.save_config(dict(cfgmod.DEFAULT_CONFIG))
+                self.assertEqual(cfgmod.config_path(), self.path)
+                self.assertTrue(os.path.exists(self.path),
+                                'config was not written to PISCOPE_CONFIG_PATH')
+                self.assertFalse(
+                    os.path.exists(legacy),
+                    'save_config wrote to HOME instead of PISCOPE_CONFIG_PATH')
+                self.assertFalse(os.path.exists(
+                    os.path.join(fake_home, '.config')),
+                    'save_config created a ~/.config tree despite the override')
+            finally:
+                if old_home is None:
+                    os.environ.pop('HOME', None)
+                else:
+                    os.environ['HOME'] = old_home
 
 
 class TestConfigValidation(unittest.TestCase):
