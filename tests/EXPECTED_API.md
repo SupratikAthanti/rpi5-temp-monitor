@@ -282,3 +282,199 @@ active throttles 2; verdict = ACTIVE COOLER with reasons naming 90.0°C and 2 th
 timestamps. Left-Riemann energy = `(2.4+4.8+7.2)*60/3600 = 0.24 Wh`.
 At `$0.15/kWh` cost = `$0.00004`. Avg wall = 6.0 W, p95 wall = 9.6 W.
 With `battery_wh=45`: avg runtime 7.5 h, conservative (p95) 4.7 h.
+
+---
+
+# NEW SECTIONS — command execution, cron installer, detail overlays, README
+
+These interfaces are required by the newly added tests
+(`test_command_execution.py`, `test_setup_cron.py`, `test_detail_overlay.py`,
+`test_readme.py`, `test_design_gaps.py`). They currently FAIL because the
+features are missing/unwired. Implement exactly as described; all other
+existing APIs remain unchanged. Pure logic must stay importable without
+`textual` and must never touch the real machine when a context is injected.
+
+## 9. Command execution — `execute_command(cmd, context) -> result`
+
+**Canonical location:** `piscope_commands.execute_command`. A re-export from
+`piscope_tui` is also accepted (the test checks `piscope_commands` first, then
+`piscope_tui`). The TUI's command handler must call this function; the old
+"return status text only" behaviour of `/test`, `/reset`, `/report`, `/range`,
+`/cron` must be replaced by real execution through the injected context.
+
+```python
+def execute_command(cmd, context) -> dict: ...
+```
+
+* `cmd` may be a **raw command string** (e.g. `'/test 60'`) **or** the dict
+  returned by `parse_command`. Strings must be parsed with `parse_command`
+  first; invalid commands return `{'ok': False, 'status': <error>, 'effects': []}`.
+
+### Injected context (exact dict keys)
+
+```python
+context = {
+    'dir': str,            # scratch data dir; default log names live here
+    'config': dict,        # current config values (may be DEFAULT_CONFIG)
+    'config_path': str,    # file path used to persist config changes
+    'scripts': str,        # directory containing run-test.sh / setup-cron.sh / stop.sh
+    'state': dict,         # mutable TUI state (paused / quit / detail ...)
+    'confirm': callable(prompt: str) -> bool,
+    'process_spawner': callable(argv: list[str], **kwargs) -> CompletedProcess-like,
+    'crontab_runner': callable(argv: list[str], input: str | None = None, **kwargs)
+                      -> CompletedProcess-like,
+    'report_fn': callable(**kwargs) -> str,
+}
+```
+
+A `CompletedProcess-like` object has `.returncode`, `.stdout`, `.stderr`.
+All keys are optional except where a test uses them; when absent, fall back to
+safe defaults (`confirm` → True for `/reset`? **No**: default to False so a
+real reset is never destructive without explicit confirmation).
+
+### Result (exact keys)
+
+```python
+{
+    'ok': bool,                 # True when the command was carried out
+    'status': str,              # human-readable line for the TUI status bar
+    'effects': list[str],       # machine-readable effect markers (see below)
+    ...command-specific keys...
+}
+```
+
+### Per-command required behaviour
+
+| Command | Required effect via injected context | Effect marker | Extra result keys |
+|---|---|---|---|
+| `/test N` | Call `process_spawner` **exactly once**, non-blocking, with an argv whose first element's basename is `run-test.sh` and which contains the string `str(N)` (e.g. `'/test 60'` → `... '60'`). Never sleep. Optionally pass `--mode <config['mode']>`. | `test_started` | `'minutes': int` |
+| `/reset` | Only when `confirm(<prompt>)` returns True: delete `<dir>/temp_log.csv`, `<dir>/power_log.csv`, `<dir>/spikes.csv` (and `<dir>/collector.pid`, `<dir>/spike_state` if present). When confirm returns False: delete nothing, still return `ok=True`. | `logs_cleared` or `reset_cancelled` | — |
+| `/report` | Call `report_fn(**kwargs)` exactly once with **no** `range_spec` (or `range_spec=None`). Put its returned string in `result['report']`. | `report_shown` | `'report': str` |
+| `/range SPEC` | Call `report_fn(range_spec=SPEC)` exactly once (`SPEC='7d'` for `/range 7d`). Put returned text in `result['report']`. | `range_report_shown` | `'report': str`, `'scrollable': True` |
+| `/cron start` | Use `crontab_runner`: read with `['crontab','-l']`, ensure exactly one collector line exists (contains `collect.sh` and `--mode both`), write full content via `['crontab','-']` with the new text as the **`input=` kwarg**. Preserve all unrelated lines. Idempotent across repeated starts. | `cron_started` | — |
+| `/cron stop` | Read with `['crontab','-l']`, remove lines containing `collect.sh`, preserve unrelated lines, write via `['crontab','-']` with `input=`. | `cron_stopped` | — |
+| `/cron status` | Only call `['crontab','-l']`; **never** call `['crontab','-']`. `status` must contain `running` (case-insensitive) when a collector line exists, else `stopped`. | `cron_status` | — |
+| `/mode X` | Update `config['mode']` and persist to `context['config_path']` (via `piscope_config.save_config`). `X ∈ {temp,power,both}`. | `mode_changed` | `'config': dict` |
+| `/config set K V` | Use `piscope_config.set_config_value`; persist to `config_path`. | `config_changed` | `'config': dict` |
+| `/pause` / `/resume` | Set `state['paused']` True / False. | `paused` / `resumed` | — |
+| `/quit` | Set `state['quit'] = True`. | `quit` | — |
+| `/help`, `/decision`, `/config` (no args) | Keep prior status behaviour; harmless no-op effects. | `help_shown` etc. | — |
+
+Notes:
+* `crontab_runner` is called as `crontab_runner(argv, input=None)` for `-l` and
+  `crontab_runner(['crontab','-'], input=<full crontab text>)` for writes.
+  The fake in tests records every call and keeps its own crontab state.
+* Never call the real `subprocess.crontab`, never write to a real home/crontab
+  when a context is provided.
+* `execute_command` must remain importable with `textual` absent.
+
+## 10. Rich detail overlays — `piscope_tui.build_detail(row, tab, ctx) -> dict`
+
+```python
+def build_detail(row: dict, tab: str, ctx: dict | None = None) -> dict: ...
+```
+
+`Enter` on a data row must show a structured overlay built by this helper
+(wire it into the TUI loop: store `build_detail(row, tab, ctx)` in
+`state['detail']`). The old behaviour of showing only `row['text']` is wrong.
+
+### Injected `ctx` (exact keys)
+
+```python
+ctx = {
+    'records':   [ {'timestamp': str, 'soc_temp': float, 'pmic_temp': float,
+                    'load_1m': float, 'arm_freq': int, 'throttled': str,
+                    'top_proc': str, 'top_cpu': float}, ... ],   # analyze.parse_csv_string records
+    'raw_lines': [str, ...],   # raw temperature CSV data lines, parallel to records (no header)
+    'spikes':    [ {'timestamp': str, 'soc_temp': float, 'baseline': float,
+                    'delta': float, 'load': float, 'culprit_app': str,
+                    'detail': str}, ... ],                       # analyze.parse_spikes_string records
+}
+```
+
+### Overlay result (exact keys)
+
+```python
+{
+    'title': str,                 # non-empty heading
+    'value': str,                 # the row's displayed value
+    'provenance': {
+        'sample_index': int,      # index into ctx['records'] / ctx['raw_lines']
+        'timestamp': str,         # ctx['records'][sample_index]['timestamp']
+        'raw_line': str,          # ctx['raw_lines'][sample_index] (verbatim, whitespace-insensitive compare)
+    },
+    'spike_snapshot': None | [    # only for spike rows; None otherwise
+        {'comm': str, 'cpu_pct': float | str, 'mem_pct': float | str,
+         'args': str}, ...
+    ],
+}
+```
+
+Required behaviour:
+* Always return a dict containing `'provenance'`; with `ctx=None` it may be an
+  empty placeholder but must not raise.
+* For `temp.min` / `temp.max` rows (ids must stay exactly these), `sample_index`
+  must point at the record that actually produced the min / max `soc_temp`, so
+  the test can verify `records[sample_index]['soc_temp']` equals 60.0 / 90.0
+  respectively and `raw_line` matches the corresponding raw CSV line.
+* For aggregate rows (e.g. `temp.avg`), any in-range `sample_index` is fine, but
+  `raw_line` must be one of `ctx['raw_lines']`.
+* Spike data rows have ids beginning with `perf.spike` (e.g. keep the existing
+  `perf.spike.detail`). For those rows, parse every `spike['detail']` string of
+  the form `opencode(80.0%|mem:12.3%|/usr/bin/opencode serve);ps(1.0%|mem:0.1%|ps -eo aux)`
+  into `{'comm':'opencode','cpu_pct':80.0,'mem_pct':12.3,'args':'/usr/bin/opencode serve'}`
+  and the second entry `{'comm':'ps', ... 'args':'ps -eo aux'}`. `cpu_pct` /
+  `mem_pct` may be numbers or numeric strings (tests strip a trailing `%`).
+  Snapshot must have at least two entries for such a detail string.
+* Keep these row ids stable: `temp.min`, `temp.max`, `temp.avg`, and any
+  `perf.spike*`.
+
+## 11. `setup-cron.sh` (repo root, executable)
+
+Counterpart to `stop.sh`, per design.md §13.
+
+```bash
+setup-cron.sh start|stop|status
+```
+
+* Must exist at the repo root, have a shebang, and be executable.
+* Must invoke the `crontab` command **by name on PATH** or honour one of the env
+  overrides `CRON_BIN` / `CRONTAB` / `CRON_CMD` pointing at an executable. The
+  tests set all three to a fake and prepend its directory to `PATH`, so the real
+  crontab is never touched.
+* `start`: read `crontab -l`; if no collector line exists, append exactly one
+  line containing `collect.sh` and `--mode both` (default log path is fine),
+  then write the full content via `crontab -` (stdin). Must be idempotent and
+  must preserve unrelated lines.
+* `stop`: read `crontab -l`; remove only lines containing `collect.sh`; write
+  remaining lines via `crontab -`; preserve unrelated lines. (May prompt; tests
+  feed `y\n` on stdin.)
+* `status`: read `crontab -l`, print collector status, **do not write** the
+  crontab.
+* All invocations of crontab must go through the injected command (never a
+  hard-coded `/usr/bin/crontab`).
+
+## 12. README.md (design.md §13)
+
+The tests read `README.md` from the repo root. It must be rewritten so that:
+* The **first heading** contains `PiScope` (case-insensitive).
+* A **bare `piscope` line** appears (one-command workflow, no args/subcommand;
+  an optional `$` prompt and `#` comment are accepted by the regex
+  `^\$?\s*piscope\s*(#.*)?$`), and text describing "one command" / "no flags" /
+  "single command" / "just run" / "opens everything" appears.
+* All five tabs are mentioned, in order: Overview, Temperature, Performance,
+  Battery, Config. Config must be explicitly described as last/fifth.
+* `?` is documented as the command palette trigger; the literals `/test`,
+  `/reset`, `/report`, `/range`, `/cron`, `/mode`, `/config`, `/quit` appear.
+* `config.json` is documented (the `~/.config/piscope/config.json` path).
+* All three modes `temp`, `power`, `both` are documented.
+* `power`, `cost`, `battery` are documented, along with Wh / kWh units.
+
+## 13. Audit coverage (already implemented; tests lock it in)
+
+`test_design_gaps.py` verifies two design requirements that had no direct test:
+* `power_read.read_power(env=...)` honours `wall_factor` from config at
+  `PISCOPE_CONFIG_PATH` (returns `pmic_w`, `wall_w == pmic_w * wall_factor`,
+  `wall_factor`).
+* `piscope_cli.main(['view', LOG, '--range', '7d'])` calls
+  `analyze.build_report(..., range_spec='7d')` (assert via mock.patch).
