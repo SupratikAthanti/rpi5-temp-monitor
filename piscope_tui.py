@@ -386,6 +386,12 @@ def resolve_key_action(key, curses_mod=None):
         return None
 
     if isinstance(key, str):
+        # Literal control characters must be matched against the raw string
+        # first: `.strip()` collapses '\t', '\n' and '\r' to '' (§14.5).
+        if key == '\t':
+            return KEY_BINDINGS['tab']
+        if key in ('\n', '\r'):
+            return KEY_BINDINGS['enter']
         token = key.strip().lower()
         if token in ('\t', 'tab'):
             return KEY_BINDINGS['tab']
