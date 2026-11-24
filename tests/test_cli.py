@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 SCRIPT = os.path.join(REPO, 'piscope')
+START_SCRIPT = os.path.join(REPO, 'start.py')
 
 TEMP_CSV = """timestamp,soc_temp_c,pmic_temp_c,load_1m,arm_freq_mhz,throttled_hex,top_proc,top_cpu_pct
 2026-11-21T10:00:00Z,60.0,50.0,0.50,2400,0x0,opencode,50.0
@@ -55,6 +56,34 @@ class TestEntryScript(unittest.TestCase):
         self.assertIn('SoC TEMPERATURE STATS', res.stdout)
         self.assertIn('Average', res.stdout)
         self.assertIn('FINAL VERDICT', res.stdout)
+
+
+class TestPythonLauncher(unittest.TestCase):
+    """The plain-Python entry point must be usable from any working directory."""
+
+    def test_start_script_exists(self):
+        self.assertTrue(os.path.exists(START_SCRIPT),
+                        'start.py launcher is missing at repo root')
+
+    def test_help_works_from_another_directory(self):
+        res = subprocess.run([sys.executable, START_SCRIPT, '--help'],
+                             cwd=tempfile.gettempdir(), stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, timeout=20)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        out = (res.stdout + res.stderr).lower()
+        self.assertIn('usage', out)
+        self.assertIn('view', out)
+
+    def test_view_works_from_another_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = os.path.join(td, 'temp_log.csv')
+            with open(log, 'w') as f:
+                f.write(TEMP_CSV)
+            res = subprocess.run([sys.executable, START_SCRIPT, 'view', log],
+                                 cwd=tempfile.gettempdir(), stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True, timeout=20)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn('SoC TEMPERATURE STATS', res.stdout)
 
 
 class TestCliModule(unittest.TestCase):

@@ -13,6 +13,7 @@ CONFIG_PATH_ENV = 'PISCOPE_CONFIG_PATH'
 DEFAULT_CONFIG = {
     'render_interval_s': 1.0,
     'sample_interval_s': 1.0,
+    'power_sample_interval_s': 1.0,
     'log_cadence_s': 60,
     'mode': 'both',
     'rate_per_kwh': 0.15,
@@ -25,8 +26,9 @@ DEFAULT_CONFIG = {
 
 # The eight settings that can be changed live from the Config tab / /config set.
 LIVE_KEYS = {
-    'render_interval_s', 'sample_interval_s', 'log_cadence_s', 'mode',
-    'rate_per_kwh', 'battery_wh', 'wall_factor', 'energy_windows_min',
+    'render_interval_s', 'sample_interval_s', 'power_sample_interval_s',
+    'log_cadence_s', 'mode', 'rate_per_kwh', 'battery_wh', 'wall_factor',
+    'energy_windows_min',
 }
 
 
@@ -53,7 +55,8 @@ def validate_config(cfg):
     if not isinstance(cfg, dict):
         return out
 
-    for key in ('render_interval_s', 'sample_interval_s'):
+    for key in ('render_interval_s', 'sample_interval_s',
+                'power_sample_interval_s'):
         if key in cfg:
             out[key] = _clamp(
                 _as_float(cfg[key], DEFAULT_CONFIG[key]), 0.1, 60.0)

@@ -57,6 +57,59 @@ def _row(identifier, label, text, kind='data'):
     return {'id': identifier, 'label': label, 'text': text, 'kind': kind}
 
 
+# The Sampling sub-view edits these two live config keys.  ``sample_interval_s``
+# is kept as the temperature interval for backwards compatibility.
+SAMPLING_KEYS = ('power_sample_interval_s', 'sample_interval_s')
+SAMPLING_LABELS = ('Power (battery)', 'Temperature')
+
+
+def build_sampling_rows(config=None):
+    """Rows shown inside the Config tab's single Sampling sub-view."""
+    cfg = config or {}
+    rows = []
+    for key, label in zip(SAMPLING_KEYS, SAMPLING_LABELS):
+        rows.append(_row('sampling.' + key.split('_')[0], label,
+                         f'{key}: [ {_fmt(cfg.get(key), "1.0")} ] s'))
+    return rows
+
+
+def start_sampling_edit(state, rows):
+    """Seed the inline editor from the highlighted Sampling option."""
+    out = dict(state or {})
+    try:
+        idx = int(out.get('sub_index', 0))
+    except (TypeError, ValueError):
+        idx = 0
+    idx = max(0, min(len(rows or []) - 1, idx))
+    out['sub_index'] = idx
+    out['sub_editing'] = True
+    text = str((rows[idx] or {}).get('text', '')) if rows else ''
+    buffer = ''
+    if '[' in text and ']' in text:
+        buffer = text.split('[', 1)[1].split(']', 1)[0].strip()
+    out['buffer'] = buffer
+    out['cursor'] = len(buffer)
+    return out
+
+
+def close_sampling(state):
+    """Leave the Sampling sub-view and return to the Config tab."""
+    out = dict(state or {})
+    out['submenu'] = None
+    out['sub_index'] = 0
+    out['sub_editing'] = False
+    out['buffer'] = ''
+    return out
+
+
+def _interval_seconds(value, default=1.0):
+    """Coerce a configured interval to a positive float (defensive)."""
+    try:
+        return max(0.1, float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def _fmt(value, default='—'):
     return default if value in (None, '') else str(value)
 
@@ -250,7 +303,13 @@ def build_tab_rows(tab, ctx=None):
     if tab == 'Config':
         add(_row('config.header', 'CONFIG', 'CONFIG — Enter edits · Esc cancels',
                  'section'))
-        keys = sorted(_config.LIVE_KEYS) if _config else []
+        add(_row('config.sampling', 'SAMPLING',
+                 f'SAMPLING  power_sample_interval_s='
+                 f'{_fmt(c.get("power_sample_interval_s"), "1.0")}s · '
+                 f'sample_interval_s={_fmt(c.get("sample_interval_s"), "1.0")}s'
+                 f'  → Enter', 'data'))
+        keys = sorted(k for k in (_config.LIVE_KEYS if _config else [])
+                      if k not in SAMPLING_KEYS)
         for key in keys:
             value = c.get(key, (_config.DEFAULT_CONFIG.get(key)
                                 if _config else '—'))
@@ -329,6 +388,8 @@ def resolve_enter_action(row, tab):
     """Return ``'edit'`` (Config data row), ``'detail'`` or ``None``."""
     if not row or row.get('kind') != 'data':
         return None
+    if row.get('id') == 'config.sampling':
+        return 'submenu'
     return 'edit' if tab == 'Config' else 'detail'
 
 
@@ -833,31 +894,50 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
         text = _clip(text, text_max)
         if pad:
             text = text.ljust(text_max)
-        _put(y, 0, left, 1)
+        _put(y, 0, left, 1, _style('frame'))
         _put(y, text_x, text, text_max, attr)
-        _put(y, right_x, right, 1)
+        _put(y, right_x, right, 1, _style('frame'))
 
     def _separator(y):
         if 0 <= y < height:
-            _put(y, 0, '╟' + '─' * max(0, width - 3) + '╢', width - 1)
+            _put(y, 0, '╟' + '─' * max(0, width - 3) + '╢', width - 1,
+                 _style('frame'))
 
     # --- row 0: top border, with the active tab as its title ---------------
     tab_index = state['tab_index']
     tab_name = TABS[tab_index] if 0 <= tab_index < len(TABS) else TABS[0]
     title = _clip(f'╔═ PiScope · {tab_name.upper()} ', width - 2)
-    _put(0, 0, title + '─' * max(0, width - 2 - len(title)) + '╗', width - 1)
+    _put(0, 0, title + '─' * max(0, width - 2 - len(title)) + '╗', width - 1,
+         _style('header', bold=True))
 
     # --- row 1: tab bar (active tab keeps its leading ◀; add a trailing ▶) -
     active = [('◀ ' + t if i == tab_index else t) for i, t in enumerate(TABS)]
-    tabs = None
+    chosen_sep = ' │ '
     for sep in (' │ ', '│'):
         candidate = ' ' + sep.join(active) + ' ▶ '
         if len(candidate) <= text_max:
-            tabs = candidate
+            chosen_sep = sep
             break
-    if tabs is None:
-        tabs = _clip(' ' + '│'.join(active) + '▶', text_max)
-    _lined(1, tabs)
+    else:
+        chosen_sep = '│'
+    # Draw the bar in segments so the active tab can be highlighted without
+    # writing any character twice.
+    _put(1, 0, '║', 1, _style('frame'))
+    bar_parts = []
+    for i, label in enumerate(active):
+        if i:
+            bar_parts.append((chosen_sep, 'tab'))
+        bar_parts.append((label, 'tab_active' if i == tab_index else 'tab'))
+    bar_parts.append((' ▶ ', 'tab'))
+    bar_x = 0
+    for text, role in bar_parts:
+        if bar_x >= text_max:
+            break
+        n = min(len(text), text_max - bar_x)
+        _put(1, text_x + bar_x, text, n,
+             _style(role, bold=(role == 'tab_active')))
+        bar_x += len(text)
+    _put(1, right_x, '║', 1, _style('frame'))
 
     _separator(2)
 
@@ -885,36 +965,87 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
         else:
             continue
         break
-    _lined(3, header, pad=False)
+    _lined(3, header, _style('header', bold=True), pad=False)
 
     # --- rows 4 .. height-3: content ---------------------------------------
     top = state['scroll']
     visible = max(1, height - 6)
-    for offset in range(visible):
-        pos = top + offset
-        if pos >= len(rows):
-            break
-        row = rows[pos]
-        marker = '>' if pos == state['index'] else ' '
-        prefix = f"{marker} {row['label']:<24} "
-        text = str(row['text'])
-        avail = text_max - len(prefix)
-        if avail > 1:
-            content = prefix + _clip(text, avail).rjust(avail)
-        else:
-            content = _clip(prefix + text, text_max)
-        attr = 0
-        if pos == state['index']:
-            attr = 1 if _curses_A_REVERSE is None else _curses_A_REVERSE
-        _lined(4 + offset, content, attr)
+    if state.get('submenu') == 'sampling':
+        # Config → SAMPLING: a compact panel replaces the tab's content rows.
+        sub_rows = build_sampling_rows(cfg)
+        try:
+            sub_index = max(0, min(len(sub_rows) - 1,
+                                   int(state.get('sub_index', 0))))
+        except (TypeError, ValueError):
+            sub_index = 0
+        _lined(4, ' SAMPLING · Enter edit · Esc back',
+               _style('header', bold=True))
+        editing = bool(state.get('sub_editing'))
+        shown = str(state.get('buffer', ''))
+        try:
+            caret = max(0, min(len(shown), int(state.get('cursor', len(shown)))))
+        except (TypeError, ValueError):
+            caret = len(shown)
+        if editing:
+            shown = shown[:caret] + '_' + shown[caret:]
+        for offset, sub_row in enumerate(sub_rows):
+            y = 5 + offset
+            if y >= height - 1:
+                break
+            marker = '>' if offset == sub_index else ' '
+            prefix = f"{marker} {sub_row['label']:<16} "
+            text = str(sub_row['text'])
+            if editing and offset == sub_index:
+                # Swap the displayed value for "[ buffer_ ] s" while editing.
+                head, sep, tail = text.partition('[ ')
+                if sep:
+                    _old, close_sep, suffix = tail.partition(' ]')
+                    if close_sep:
+                        text = head + '[ ' + shown + ' ]' + suffix
+            avail = text_max - len(prefix)
+            if avail > 1:
+                content = prefix + _clip(text, avail).rjust(avail)
+            else:
+                content = _clip(prefix + text, text_max)
+            if offset == sub_index:
+                reverse = 1 if _curses_A_REVERSE is None else _curses_A_REVERSE
+                _lined(y, content, reverse)
+            else:
+                _lined(y, content, _style('label'))
+    else:
+        for offset in range(visible):
+            pos = top + offset
+            if pos >= len(rows):
+                break
+            row = rows[pos]
+            marker = '>' if pos == state['index'] else ' '
+            prefix = f"{marker} {row['label']:<24} "
+            text = str(row['text'])
+            avail = text_max - len(prefix)
+            if avail > 1:
+                content = prefix + _clip(text, avail).rjust(avail)
+            else:
+                content = _clip(prefix + text, text_max)
+            y = 4 + offset
+            if pos == state['index']:
+                reverse = 1 if _curses_A_REVERSE is None else _curses_A_REVERSE
+                _lined(y, content, reverse)
+            elif avail > 1:
+                _lined(y, content, _style('label'))
+                value = content[len(prefix):]
+                if value:
+                    _put(y, text_x + len(prefix), value, len(value),
+                         _style(_value_style(row), bold=True))
+            else:
+                _lined(y, content, _style('value'))
 
     if filtered is not None:
         view = build_palette_view(filtered, state.get('cmd_index', 0))
         base = max(4, height - 6)
-        _lined(base, ' COMMANDS (Esc to close):')
+        _lined(base, ' COMMANDS (Esc to close):', _style('header', bold=True))
         for i, line in enumerate(view['lines']):
             if base + 1 + i < height - 1:
-                _lined(base + 1 + i, line)
+                _lined(base + 1 + i, line, _style('value'))
 
     detail = state.get('detail')
     if isinstance(detail, dict):
@@ -932,7 +1063,8 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
                 mem=proc.get('mem_pct', ''), args=proc.get('args', '')))
         base = max(4, height - 4 - len(lines))
         for i, line in enumerate(lines):
-            _lined(base + i, line)
+            _lined(base + i, line,
+                   _style('header', bold=True) if i == 0 else _style('value'))
 
     _separator(height - 2)
 
@@ -971,7 +1103,7 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
         left = _clip(left, room)
         right_text = prefix_status[:max(0, text_max - len(left) - 2)]
         bar = left + ' ' * max(0, text_max - len(left) - len(right_text)) + right_text
-    _lined(height - 1, bar, left='╚', right='╝')
+    _lined(height - 1, bar, _style('bar'), left='╚', right='╝')
     stdscr.refresh()
 
 
@@ -981,6 +1113,69 @@ try:
 except Exception:  # pragma: no cover
     _curses = None
     _curses_A_REVERSE = None
+
+
+# --- colour theme ---------------------------------------------------------
+# Colours must be registered from inside curses.wrapper(), so the pairs are
+# built at startup.  On monochrome terminals (or in tests) every role simply
+# resolves to attribute 0 and the old plain rendering is preserved.
+_THEME_COLORS = (
+    ('frame', 'COLOR_BLUE'),
+    ('tab', 'COLOR_CYAN'),
+    ('tab_active', 'COLOR_WHITE'),
+    ('header', 'COLOR_CYAN'),
+    ('label', 'COLOR_CYAN'),
+    ('value', 'COLOR_WHITE'),
+    ('good', 'COLOR_GREEN'),
+    ('warn', 'COLOR_YELLOW'),
+    ('critical', 'COLOR_RED'),
+    ('bar', 'COLOR_YELLOW'),
+)
+_COLOR_ATTRS = {}
+
+
+def _init_colors():
+    """Register curses colour pairs; a no-op when colour is unavailable."""
+    if _curses is None:
+        return
+    try:
+        _curses.start_color()
+        try:
+            _curses.use_default_colors()
+        except Exception:  # pragma: no cover - older curses implementations
+            pass
+        for pair, (name, color_name) in enumerate(_THEME_COLORS, start=1):
+            color = getattr(_curses, color_name, None)
+            if color is None:
+                continue
+            _curses.init_pair(pair, color, -1)
+            _COLOR_ATTRS[name] = _curses.color_pair(pair)
+    except Exception:  # pragma: no cover - unusual / monochrome terminals
+        _COLOR_ATTRS.clear()
+
+
+def _style(name, bold=False):
+    """Return the curses attribute for a theme role (0 without colour)."""
+    attr = _COLOR_ATTRS.get(name, 0)
+    if bold and _curses is not None:
+        attr |= getattr(_curses, 'A_BOLD', 0)
+    return attr
+
+
+def _value_style(row):
+    """Choose a semantic colour for a row's value from its label and text."""
+    label = str(row.get('label', '')).lower()
+    text = str(row.get('text', '')).lower()
+    if any(word in label for word in ('verdict', 'recommend', 'throttl')):
+        if any(word in text for word in (
+                'throttl', 'critical', 'active cooler', 'over', 'hot')):
+            return 'critical'
+        if any(word in text for word in ('heatsink', 'passive', 'warm')):
+            return 'warn'
+        return 'good'
+    if 'p95' in label or 'max' in label:
+        return 'warn'
+    return 'value'
 
 
 def _persist_sample(cfg):
@@ -1009,6 +1204,7 @@ def _persist_sample(cfg):
 
 
 def _tui_loop(stdscr, cfg):
+    _init_colors()
     try:
         _curses.curs_set(0)
     except Exception:
@@ -1021,13 +1217,16 @@ def _tui_loop(stdscr, cfg):
         'palette': False, 'editing': False, 'detail': None,
         'paused': False, 'quit': False, 'cmd_index': 0,
         'command_focus': False,
+        'submenu': None, 'sub_index': 0, 'sub_editing': False,
     }
     status = ''
     filtered = None
-    last_ctx_time = 0.0
+    temp_ctx = {}  # Temperature / Performance (legacy sample_interval_s)
+    power_ctx = {}  # Battery (power_sample_interval_s)
+    last_temp_time = 0.0
+    last_power_time = 0.0
     last_log_time = time.monotonic()
     started = last_log_time
-    ctx = {}
 
     while not state['quit']:
         now = time.monotonic()
@@ -1035,13 +1234,31 @@ def _tui_loop(stdscr, cfg):
         state['session_time'] = (
             f'{elapsed // 3600:02d}:{(elapsed % 3600) // 60:02d}:'
             f'{elapsed % 60:02d}')
-        if now - last_ctx_time >= float(cfg.get('sample_interval_s', 1.0)):
-            ctx = build_context(cfg)
-            last_ctx_time = now
+        # The two caches refresh independently; read the live cfg every pass so
+        # an edit through the Sampling sub-view takes effect immediately.
+        if now - last_temp_time >= _interval_seconds(
+                cfg.get('sample_interval_s')):
+            temp_ctx = build_context(cfg)
+            last_temp_time = now
+        if now - last_power_time >= _interval_seconds(
+                cfg.get('power_sample_interval_s')):
+            power_ctx = build_context(cfg)
+            last_power_time = now
+        tab = TABS[state['tab_index']]
+        if tab == 'Battery':
+            ctx = power_ctx
+        elif tab in ('Temperature', 'Performance'):
+            ctx = temp_ctx
+        elif tab == 'Overview':
+            ctx = dict(temp_ctx)
+            ctx.update(power_ctx)
+        else:  # Config: reflect config saves without waiting for a refresh
+            ctx = dict(temp_ctx)
+            ctx.update(cfg)
         if now - last_log_time >= float(cfg.get('log_cadence_s', 60)):
             _persist_sample(cfg)
             last_log_time = now
-        rows = build_tab_rows(TABS[state['tab_index']], ctx)
+        rows = build_tab_rows(tab, ctx)
         state['index'], state['scroll'] = move_selection(
             rows, state['index'], state['scroll'],
             max(1, stdscr.getmaxyx()[0] - 4), 'none')
@@ -1059,6 +1276,52 @@ def _tui_loop(stdscr, cfg):
         except Exception:
             key = -1
         if key == -1:
+            continue
+
+        # Sampling sub-view: consume every key so nothing leaks to the tab/row
+        # handlers underneath.  ``cfg`` is the live dict (reassigned on save).
+        if state.get('submenu') == 'sampling':
+            sub_rows = build_sampling_rows(cfg)
+            try:
+                sub_index = max(0, min(len(sub_rows) - 1,
+                                       int(state.get('sub_index', 0))))
+            except (TypeError, ValueError):
+                sub_index = 0
+            state['sub_index'] = sub_index
+            if state.get('sub_editing'):
+                if key in (10, 13):
+                    key_name = SAMPLING_KEYS[sub_index]
+                    try:
+                        updated = _config.set_config_value(
+                            _config.load_config(), key_name, state['buffer'])
+                        _config.save_config(updated)
+                        cfg = updated
+                        status = f'Saved {key_name} = {updated[key_name]}'
+                    except Exception as exc:
+                        status = str(exc)
+                    state['sub_editing'] = False
+                    state['buffer'] = ''
+                elif key in (27,):
+                    state['sub_editing'] = False
+                    state['buffer'] = ''
+                    status = 'Edit cancelled'
+                elif key in (8, 127, _curses.KEY_BACKSPACE if _curses else 8):
+                    state['buffer'] = state['buffer'][:-1]
+                    state['cursor'] = len(state['buffer'])
+                elif 32 <= key < 127:
+                    state['buffer'] += chr(key)
+                    state['cursor'] = len(state['buffer'])
+                continue
+            sub_action = resolve_key_action(key, _curses)
+            if sub_action == 'cancel':
+                state = close_sampling(state)
+                status = ''
+            elif sub_action in ('move_up', 'move_down'):
+                step = -1 if sub_action == 'move_up' else 1
+                state['sub_index'] = max(0, min(len(sub_rows) - 1,
+                                                sub_index + step))
+            elif sub_action == 'activate':
+                state = start_sampling_edit(state, sub_rows)
             continue
 
         # A detail overlay closes on any key.
@@ -1147,12 +1410,18 @@ def _tui_loop(stdscr, cfg):
                     rows[state['index']], TABS[state['tab_index']])
                 if row_action == 'edit':
                     state = start_config_edit(state, rows)
+                elif row_action == 'submenu':
+                    state['submenu'] = 'sampling'
+                    state['sub_index'] = 0
+                    state['sub_editing'] = False
+                    state['buffer'] = ''
                 elif row_action == 'detail':
                     state['detail'] = build_detail(
                         rows[state['index']], TABS[state['tab_index']], ctx)
         elif action == 'cancel':
-            state = handle_escape(state)
-            status = 'Esc: command bar focused'
+            # Esc at the main screen exits; handle_escape() stays available for
+            # API compatibility but is no longer wired to this bare-Esc path.
+            state['quit'] = True
         elif key in (ord('q'),):
             state['quit'] = True
 

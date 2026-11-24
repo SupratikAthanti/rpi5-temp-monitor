@@ -78,6 +78,62 @@ def frame_lines(scr):
     return lines
 
 
+def render_sampling_frame(width, height, editing=False):
+    """Render the Config tab with the Sampling sub-view open."""
+    rows = tui.build_tab_rows('Config')
+    state = {
+        'tab_index': tui.TABS.index('Config'), 'index': 0, 'scroll': 0,
+        'buffer': '2.5', 'cursor': 3, 'palette': False, 'editing': False,
+        'detail': None, 'paused': False, 'cmd_index': 0,
+        'submenu': 'sampling', 'sub_index': 0, 'sub_editing': editing,
+    }
+    cfg = {'power_sample_interval_s': 2.5, 'sample_interval_s': 5.0}
+    scr = FakeStdscr(height, width)
+    tui._render(scr, state, rows, cfg)
+    return scr
+
+
+class TestSamplingSubmenuRightEdge(unittest.TestCase):
+    """The sub-view panel obeys the same width / single-write contract."""
+
+    def _assert_contract(self, scr, width):
+        for (y, x, drawn, natural) in scr.calls:
+            self.assertLessEqual(
+                len(drawn), width - 1,
+                f'row {y}: drew {len(drawn)} cols (> {width - 1})')
+            self.assertLessEqual(x + len(drawn), width)
+        by_y = {}
+        for (y, x, drawn, natural) in scr.calls:
+            by_y.setdefault(y, []).append((x, drawn))
+        for y, writes in by_y.items():
+            next_x = -1
+            for x, drawn in sorted(writes):
+                self.assertGreaterEqual(
+                    x, next_x, f'overlapping writes on row {y} at x={x}')
+                next_x = x + len(drawn)
+
+    def test_sampling_panel_fits(self):
+        for width, height in SIZES:
+            for editing in (False, True):
+                with self.subTest(size=(width, height), editing=editing):
+                    scr = render_sampling_frame(width, height, editing)
+                    self._assert_contract(scr, width)
+                    lines = frame_lines(scr)
+                    for y in (0, 1, height - 1):
+                        self.assertIn(y, lines)
+                        self.assertLessEqual(len(lines[y]), width - 1)
+
+    def test_sampling_panel_shows_both_options_and_caret(self):
+        scr = render_sampling_frame(80, 24, editing=True)
+        lines = frame_lines(scr)
+        self.assertIn('SAMPLING', lines[4])
+        self.assertIn('>', lines[5])
+        self.assertIn('power_sample_interval_s', lines[5])
+        self.assertIn('[ 2.5_ ]', lines[5])
+        self.assertIn('sample_interval_s', lines[6])
+        self.assertNotIn('power_sample_interval_s', lines[6])
+
+
 class TestRuntimeRightEdge(unittest.TestCase):
     """The curses frontend truncates with addnstr; nothing may wrap/overrun."""
 

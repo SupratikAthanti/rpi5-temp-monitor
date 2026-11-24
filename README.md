@@ -25,6 +25,20 @@ To print a saved report instead of opening the dashboard:
 piscope view temp_log.csv --power-log power_log.csv --range 7d
 ```
 
+### Launch with plain Python (no PATH setup)
+
+You don't need `piscope` on your `PATH` — `start.py` is a normal Python script
+that works from any directory:
+
+```bash
+python3 /home/berry5/projects/temp/start.py
+python3 /home/berry5/projects/temp/start.py view temp_log.csv --power-log power_log.csv
+```
+
+It resolves its own location, so it always finds its companion modules. Log
+paths given to `view` are still interpreted relative to your current directory.
+The `piscope` file is just a thin shim around the same launcher.
+
 ---
 
 ## The five tabs
@@ -45,8 +59,13 @@ The dashboard has exactly five tabs, always in this order:
 
 `←` / `→` switch tabs, `↑` / `↓` move the highlighted row (the view
 auto-scrolls to keep it visible), `Enter` opens a row's detail / provenance
-overlay (or edits a setting in Config), and `Esc` closes overlays or cancels an
-edit. `Home` / `End` jump to the first / last row, `PgUp` / `PgDn` jump a page.
+overlay (or edits a setting in Config), and `Esc` closes overlays, cancels an
+edit, closes the Sampling sub-view or the command palette — at the main screen
+(with nothing open) it exits PiScope. `Home` / `End` jump to the first / last
+row, `PgUp` / `PgDn` jump a page.
+
+The dashboard uses a cyan/blue/yellow colour theme (with red for critical
+verdicts). Monochrome terminals automatically fall back to plain text.
 
 ---
 
@@ -89,7 +108,8 @@ All settings live in `~/.config/piscope/config.json` (override the path with
 | Key | Default | Meaning |
 |---|---|---|
 | `render_interval_s` | `1.0` | Dashboard redraw interval (seconds) |
-| `sample_interval_s` | `1.0` | Live sample interval (seconds) |
+| `sample_interval_s` | `1.0` | Temperature UI refresh interval (seconds; legacy key) |
+| `power_sample_interval_s` | `1.0` | Power / Battery UI refresh interval (seconds) |
 | `log_cadence_s` | `60` | How often samples are persisted to CSV |
 | `mode` | `both` | `temp`, `power` or `both` |
 | `rate_per_kwh` | `0.15` | Electricity price in $/kWh |
@@ -97,6 +117,22 @@ All settings live in `~/.config/piscope/config.json` (override the path with
 | `wall_factor` | `1.0` | PMIC → wall power multiplier |
 | `wall_slope`, `wall_intercept` | `1.0`, `0.0` | Optional wall calibration |
 | `energy_windows_min` | `[60, 120]` | Energy windows in minutes |
+
+### Sampling sub-view (Config tab)
+
+The Config tab has one **SAMPLING** row. Press `Enter` on it to open a compact
+sub-view with two choices:
+
+1. **Power (battery)** — edits `power_sample_interval_s` (default `1.0` s),
+   which controls how often the Battery tab's cached context is refreshed.
+2. **Temperature** — edits `sample_interval_s` (default `1.0` s), the legacy
+   key controlling the Temperature and Performance tabs' cached context.
+   The Overview tab merges both caches.
+
+Use `↑` / `↓` to choose an option, `Enter` to edit its interval inline (type
+the seconds and press `Enter` to save, `Esc` to cancel), and `Esc` on the
+sub-view itself to go back to the Config tab. Edits apply to the dashboard
+immediately and are written to the config file.
 
 ### Modes
 
@@ -120,7 +156,8 @@ windows, cost and conservative (p95-based) runtime.
 
 ## Repository files
 
-- `piscope` — one-command entry point (`piscope` → TUI, `piscope view` → report).
+- `start.py` — Python launcher: `python3 start.py` → TUI, `python3 start.py view` → report.
+- `piscope` — thin shim delegating to `start.py` (`piscope` → TUI, `piscope view` → report).
 - `piscope_tui.py` — the five tabs, command palette, detail overlays and 1 Hz loop.
 - `piscope_commands.py` — command parsing and headless execution.
 - `piscope_config.py` — configuration defaults, persistence and validation.
