@@ -166,8 +166,8 @@ class TestEnergyCostBattery(unittest.TestCase):
         self.assertEqual(analyze.energy_wh([(0, 5.0)]), 0.0)
 
     def test_cost_from_kwh_rate(self):
-        self.assertAlmostEqual(analyze.cost_dollars(1000.0, 0.15), 0.15, places=9)
-        self.assertAlmostEqual(analyze.cost_dollars(0.24, 0.15), 0.000036, places=9)
+        self.assertAlmostEqual(analyze.cost_dollars(1000.0, 0.13), 0.13, places=9)
+        self.assertAlmostEqual(analyze.cost_dollars(0.24, 0.13), 0.0000312, places=9)
 
     def test_battery_runtime(self):
         self.assertAlmostEqual(analyze.battery_runtime_hours(45.0, 5.0), 9.0, places=6)

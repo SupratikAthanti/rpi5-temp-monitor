@@ -189,12 +189,22 @@ class TestLoopBehavior(unittest.TestCase):
         self.path = os.path.join(self.tmp.name, 'pistats', 'config.json')
         self._old = os.environ.get(cfgmod.CONFIG_PATH_ENV)
         os.environ[cfgmod.CONFIG_PATH_ENV] = self.path
+        # Live 1 Hz samples must never be written to the real home directory.
+        import pistats_dashboard as dashboard
+        self._old_session = os.environ.get(dashboard.SESSION_LOG_ENV)
+        os.environ[dashboard.SESSION_LOG_ENV] = os.path.join(
+            self.tmp.name, 'pistats_session.csv')
 
     def tearDown(self):
+        import pistats_dashboard as dashboard
         if self._old is None:
             os.environ.pop(cfgmod.CONFIG_PATH_ENV, None)
         else:
             os.environ[cfgmod.CONFIG_PATH_ENV] = self._old
+        if self._old_session is None:
+            os.environ.pop(dashboard.SESSION_LOG_ENV, None)
+        else:
+            os.environ[dashboard.SESSION_LOG_ENV] = self._old_session
         self.tmp.cleanup()
 
     def _drive(self, keys):
@@ -225,6 +235,9 @@ class TestLoopBehavior(unittest.TestCase):
                 mock.patch.object(tui, '_init_colors'), \
                 mock.patch.object(tui, '_persist_sample'), \
                 mock.patch.object(tui, 'build_context', lambda *a, **k: {}), \
+                mock.patch.object(tui, 'read_soc_temp', return_value=55.0), \
+                mock.patch.object(tui.power_read, 'read_power',
+                                  return_value={'pmic_w': 5.0, 'wall_w': 6.0}), \
                 mock.patch.object(tui.time, 'monotonic', monotonic):
             tui._tui_loop(self.Screen(keys), cfg)
         return seen

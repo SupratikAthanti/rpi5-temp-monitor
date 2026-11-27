@@ -16,7 +16,7 @@ DEFAULT_CONFIG = {
     'power_sample_interval_s': 1.0,
     'log_cadence_s': 60,
     'mode': 'both',
-    'rate_per_kwh': 0.15,
+    'rate_per_kwh': 0.13,
     'battery_wh': 45.0,
     'wall_factor': 1.0,
     'wall_slope': 1.0,

@@ -10,6 +10,7 @@ required.
 """
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -24,9 +25,13 @@ except Exception:  # pragma: no cover - depends on the environment
 try:
     import pistats_config as _config
     import pistats_commands as _commands
+    import pistats_dashboard as _dashboard
+    import power_read
 except ImportError:  # pragma: no cover - only when run outside the repo
     _config = None
     _commands = None
+    _dashboard = None
+    power_read = None
 
 TABS = ['Overview', 'Temperature', 'Performance', 'Battery', 'Config']
 DEFAULT_RENDER_INTERVAL_S = 1.0
@@ -145,18 +150,39 @@ def build_tab_rows(tab, ctx=None):
     add = rows.append
 
     if tab == 'Overview':
+        # The main dashboard is drawn as two stacked history graphs followed
+        # by the session energy/cost line.  These selectable rows carry the
+        # values (and the per-second samples) used by the dedicated renderer.
+        temp_now = _fmt(c.get('session_temp_now', c.get('soc_temp')), '—')
+        power_now = _fmt(c.get('session_power_now', c.get('wall_w')), '—')
+        add(_row('overview.temp', 'Temperature',
+                 'SoC ' + temp_now + ' °C  ·  p95 (1 h) ' +
+                 _fmt(c.get('p95_temp'), '—') + ' °C'))
+        temp_graph = _row('overview.temp_graph', 'TEMPERATURE HISTORY',
+                          'Temperature: ' + temp_now + ' °C · last 5 min')
+        temp_graph['samples'] = list(c.get('session_temp_samples') or [])
+        temp_graph['unit'] = '°C'
+        add(temp_graph)
+        add(_row('overview.power', 'Power',
+                 'Wall ' + power_now +
+                 ' W  ·  PMIC ' + _fmt(c.get('pmic_w'), '—') +
+                 ' W  ·  Energy 1 h ' + _fmt(c.get('energy_1h'), '—') + ' Wh'))
+        power_graph = _row('overview.power_graph', 'POWER HISTORY',
+                           'Wall power: ' + power_now + ' W · last 5 min')
+        power_graph['samples'] = list(c.get('session_power_samples') or [])
+        power_graph['unit'] = 'W'
+        add(power_graph)
+        add(_row('overview.energy', 'Session energy / cost',
+                 _fmt(c.get('session_energy_text'), '0.000 Wh') +
+                 '  ·  cost ' + _fmt(c.get('session_cost'), '$0.000000') +
+                 ' @ $' + _fmt(c.get('session_rate'), '0.13') + '/kWh' +
+                 '  ·  ' + _fmt(c.get('session_elapsed'), '00:00:00') +
+                 '  ·  ' + _fmt(c.get('session_samples'), '0') + ' samples'))
         add(_row('overview.status', 'OVERVIEW',
                  'Mode: ' + _fmt(c.get('mode'), 'both') +
                  '  ·  Render: ' + _fmt(c.get('render_interval_s'), '1 s') +
                  '  ·  Session: ' + _fmt(c.get('session_time'), '00:00:00'),
                  'section'))
-        add(_row('overview.temp', 'Temperature',
-                 'SoC ' + _fmt(c.get('soc_temp'), '—') +
-                 ' °C  ·  p95 (1 h) ' + _fmt(c.get('p95_temp'), '—') + ' °C'))
-        add(_row('overview.power', 'Power',
-                 'PMIC ' + _fmt(c.get('pmic_w'), '—') +
-                 ' W  ·  wall est. ' + _fmt(c.get('wall_w'), '—') +
-                 ' W  ·  Energy 1 h ' + _fmt(c.get('energy_1h'), '—') + ' Wh'))
         add(_row('overview.cost', 'Cost / Battery / Cron',
                  'Cost today ' + _fmt(c.get('cost'), '$0.000') +
                  '  ·  Battery ' + _fmt(c.get('battery_wh'), '45') +
@@ -289,7 +315,7 @@ def build_tab_rows(tab, ctx=None):
                  ' Wh   full log: ' + _fmt(c.get('energy_full'), '—') + ' Wh'))
         add(_row('bat.cost', 'COST', 'COST', 'section'))
         add(_row('bat.cost.detail', 'Cost',
-                 'Cost @ $' + _fmt(c.get('rate'), '0.15') + '/kWh → ' +
+                 'Cost @ $' + _fmt(c.get('rate'), '0.13') + '/kWh → ' +
                  _fmt(c.get('cost'), '$0.000')))
         add(_row('bat.runtime', 'BATTERY RUNTIME',
                  'BATTERY RUNTIME', 'section'))
@@ -718,7 +744,7 @@ def build_context(config=None):
         ctx['pmic_w'] = f"{live['pmic_w']:.2f}"
         ctx['wall_w'] = f"{live['wall_w']:.2f}"
         ctx['wall_factor'] = cfg.get('wall_factor', 1.0)
-        ctx['rate'] = cfg.get('rate_per_kwh', 0.15)
+        ctx['rate'] = cfg.get('rate_per_kwh', 0.13)
         ctx['battery_wh'] = cfg.get('battery_wh', 45.0)
         ctx['cron_status'] = os.environ.get('PISTATS_CRON_STATUS', 'STOPPED')
         if precords:
@@ -731,7 +757,7 @@ def build_context(config=None):
             ctx['energy_1h'] = f"{analyze.energy_wh(precords, 60):.2f}"
             ctx['energy_2h'] = f"{analyze.energy_wh(precords, 120):.2f}"
             ctx['battery_hours'] = f"{estimate['avg_hours']:.1f}"
-            ctx['cost'] = f"${analyze.cost_dollars(analyze.energy_wh(precords), cfg.get('rate_per_kwh', 0.15)):.5f}"
+            ctx['cost'] = f"${analyze.cost_dollars(analyze.energy_wh(precords), cfg.get('rate_per_kwh', 0.13)):.5f}"
             ctx['avg_hours'] = f"{estimate['avg_hours']:.1f}"
             ctx['conservative_hours'] = f"{estimate['conservative_hours']:.1f}"
         spikes = analyze.parse_spikes_file(
@@ -970,6 +996,29 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
     # --- rows 4 .. height-3: content ---------------------------------------
     top = state['scroll']
     visible = max(1, height - 6)
+
+    def _draw_data_row(y, pos, row):
+        """Draw one selectable row (shared by the list and dashboard views)."""
+        marker = '>' if pos == state['index'] else ' '
+        prefix = f"{marker} {row['label']:<24} "
+        text = str(row['text'])
+        avail = text_max - len(prefix)
+        if avail > 1:
+            content = prefix + _clip(text, avail).rjust(avail)
+        else:
+            content = _clip(prefix + text, text_max)
+        if pos == state['index']:
+            reverse = 1 if _curses_A_REVERSE is None else _curses_A_REVERSE
+            _lined(y, content, reverse)
+        elif avail > 1:
+            _lined(y, content, _style('label'))
+            value = content[len(prefix):]
+            if value:
+                _put(y, text_x + len(prefix), value, len(value),
+                     _style(_value_style(row), bold=True))
+        else:
+            _lined(y, content, _style('value'))
+
     if state.get('submenu') == 'sampling':
         # Config → SAMPLING: a compact panel replaces the tab's content rows.
         sub_rows = build_sampling_rows(cfg)
@@ -1012,32 +1061,76 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
                 _lined(y, content, reverse)
             else:
                 _lined(y, content, _style('label'))
+    elif tab_name == 'Overview' and _dashboard is not None:
+        # Dedicated main dashboard: current temp + history graph, then the
+        # same for power, then the session energy / cost line.  Two stacked
+        # plots share the available height and shrink (or collapse to a
+        # labelled sparkline) on small terminals.
+        by_id = {row.get('id'): (pos, row) for pos, row in enumerate(rows)}
+        drawn = set()
+        cursor = 4
+        bottom = height - 2
+        plot_h = max(0, min(8, (visible - 7) // 2))
+        compact = plot_h < 2
+
+        def _draw_row(identifier):
+            nonlocal cursor
+            entry = by_id.get(identifier)
+            if entry and cursor < bottom:
+                _draw_data_row(cursor, entry[0], entry[1])
+                drawn.add(identifier)
+                cursor += 1
+
+        def _draw_graph(identifier):
+            nonlocal cursor
+            entry = by_id.get(identifier)
+            if not entry or cursor >= bottom:
+                return
+            pos, row = entry
+            samples = row.get('samples') or []
+            unit = row.get('unit', '')
+            label = ('> ' if pos == state['index'] else '  ') + row['label']
+            if compact:
+                values = [v for _t, v in samples if v is not None]
+                spark = _sparkline(values, width=max(6, text_max // 3))
+                text = (label + '  ' + spark + '  ' +
+                        ('last 5m' if values else 'waiting for samples'))
+                _lined(cursor, _clip(text, text_max), _style('label'))
+                cursor += 1
+                return
+            lines = _dashboard.render_graph(
+                samples, width=text_max - 1, height=plot_h,
+                title=label, unit=unit,
+                current=(samples[-1][1] if samples else None),
+                window_s=_dashboard.GRAPH_WINDOW_S,
+                now=(state.get('session_now') or
+                     (samples[-1][0] if samples else None)),
+                nonnegative=(unit == 'W'))
+            for line in lines:
+                if cursor >= bottom:
+                    break
+                _lined(cursor, line, _style('value'))
+                cursor += 1
+            drawn.add(identifier)
+
+        _draw_row('overview.temp')
+        _draw_graph('overview.temp_graph')
+        _draw_row('overview.power')
+        _draw_graph('overview.power_graph')
+        _draw_row('overview.energy')
+        for pos in range(top, len(rows)):
+            if cursor >= bottom:
+                break
+            row = rows[pos]
+            if row.get('id') not in drawn:
+                _draw_data_row(cursor, pos, row)
+                cursor += 1
     else:
         for offset in range(visible):
             pos = top + offset
             if pos >= len(rows):
                 break
-            row = rows[pos]
-            marker = '>' if pos == state['index'] else ' '
-            prefix = f"{marker} {row['label']:<24} "
-            text = str(row['text'])
-            avail = text_max - len(prefix)
-            if avail > 1:
-                content = prefix + _clip(text, avail).rjust(avail)
-            else:
-                content = _clip(prefix + text, text_max)
-            y = 4 + offset
-            if pos == state['index']:
-                reverse = 1 if _curses_A_REVERSE is None else _curses_A_REVERSE
-                _lined(y, content, reverse)
-            elif avail > 1:
-                _lined(y, content, _style('label'))
-                value = content[len(prefix):]
-                if value:
-                    _put(y, text_x + len(prefix), value, len(value),
-                         _style(_value_style(row), bold=True))
-            else:
-                _lined(y, content, _style('value'))
+            _draw_data_row(4 + offset, pos, rows[pos])
 
     if filtered is not None:
         view = build_palette_view(filtered, state.get('cmd_index', 0))
@@ -1178,6 +1271,35 @@ def _value_style(row):
     return 'value'
 
 
+def read_soc_temp():
+    """Read the live SoC temperature in °C (``None`` when unavailable).
+
+    ``vcgencmd measure_temp`` is preferred, then Linux thermal sysfs.  The
+    ``FAKE_SOC_TEMP`` hook keeps tests and SSH sessions hardware-free.
+    """
+    fake = os.environ.get('FAKE_SOC_TEMP')
+    if fake not in (None, ''):
+        try:
+            value = float(fake)
+            return value if value == value and abs(value) != float('inf') else None
+        except (TypeError, ValueError):
+            return None
+    try:
+        proc = subprocess.run(
+            ['vcgencmd', 'measure_temp'], stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=2)
+        match = re.search(r'(-?\d+(?:\.\d+)?)', proc.stdout or '')
+        if match:
+            return float(match.group(1))
+    except Exception:
+        pass
+    try:
+        with open('/sys/class/thermal/thermal_zone0/temp', 'r') as handle:
+            return float(handle.read().strip()) / 1000.0
+    except (OSError, ValueError):
+        return None
+
+
 def _persist_sample(cfg):
     """Periodically persist one sample through collect.sh's shared PID lock.
 
@@ -1228,12 +1350,38 @@ def _tui_loop(stdscr, cfg):
     last_log_time = time.monotonic()
     started = last_log_time
 
+    # Live 1 Hz sampling: every observation is kept in a ring buffer for the
+    # graphs / energy integral and appended to its own session CSV.  The
+    # shared collector logs are left to _persist_sample (log_cadence_s).
+    session_log = (os.path.join(
+        os.path.dirname(os.path.abspath(_first_log())),
+        _dashboard.SESSION_LOG_FILENAME) if _dashboard else None)
+    recorder = (_dashboard.SessionRecorder(session_log) if _dashboard else None)
+    last_sample_time = float('-inf')
+    last_sample = None
+
     while not state['quit']:
         now = time.monotonic()
         elapsed = int(now - started)
         state['session_time'] = (
             f'{elapsed // 3600:02d}:{(elapsed % 3600) // 60:02d}:'
             f'{elapsed % 60:02d}')
+
+        # Sample temperature and wall power together, once per configured
+        # interval (1 second out of the box), and record every observation.
+        if (recorder is not None and
+                now - last_sample_time >= _interval_seconds(
+                    cfg.get('sample_interval_s'))):
+            temp = read_soc_temp()
+            watts = None
+            if power_read is not None:
+                try:
+                    watts = (power_read.read_power() or {}).get('wall_w')
+                except Exception:
+                    watts = None
+            last_sample = recorder.add(time.time(), temp, watts)
+            last_sample_time = now
+
         # The two caches refresh independently; read the live cfg every pass so
         # an edit through the Sampling sub-view takes effect immediately.
         if now - last_temp_time >= _interval_seconds(
@@ -1252,6 +1400,17 @@ def _tui_loop(stdscr, cfg):
         elif tab == 'Overview':
             ctx = dict(temp_ctx)
             ctx.update(power_ctx)
+            if recorder is not None:
+                wall_now = time.time()
+                session = recorder.context(
+                    cfg.get('rate_per_kwh', 0.13), elapsed, now=wall_now)
+                ctx.update(session)
+                state['session_now'] = session['session_now']
+                if last_sample is not None:
+                    if last_sample.temp is not None:
+                        ctx['session_temp_now'] = f'{last_sample.temp:.1f}'
+                    if last_sample.watts is not None:
+                        ctx['session_power_now'] = f'{last_sample.watts:.2f}'
         else:  # Config: reflect config saves without waiting for a refresh
             ctx = dict(temp_ctx)
             ctx.update(cfg)

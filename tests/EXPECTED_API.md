@@ -72,7 +72,7 @@ def parse_power_log_string(csv_text: str) -> list[dict]: ...
 def parse_power_log(filepath: str) -> list[dict]: ...
 
 def energy_wh(samples, window_minutes: float | None = None) -> float: ...
-def cost_dollars(energy_wh_value: float, rate_per_kwh: float = 0.15) -> float: ...
+def cost_dollars(energy_wh_value: float, rate_per_kwh: float = 0.13) -> float: ...
 def battery_runtime_hours(capacity_wh: float, power_w: float) -> float: ...
 def battery_estimate(capacity_wh: float, avg_power_w: float, p95_power_w: float) -> dict: ...
 
@@ -115,7 +115,7 @@ CONFIG_REL_PATH = os.path.join('.config', 'pistats', 'config.json')
 CONFIG_PATH_ENV = 'PISTATS_CONFIG_PATH'
 DEFAULT_CONFIG = {
     'render_interval_s': 1.0, 'sample_interval_s': 1.0, 'log_cadence_s': 60,
-    'mode': 'both', 'rate_per_kwh': 0.15, 'battery_wh': 45.0,
+    'mode': 'both', 'rate_per_kwh': 0.13, 'battery_wh': 45.0,
     'wall_factor': 1.0, 'wall_slope': 1.0, 'wall_intercept': 0.0,
     'energy_windows_min': [60, 120],
 }
@@ -280,7 +280,7 @@ active throttles 2; verdict = ACTIVE COOLER with reasons naming 90.0°C and 2 th
 
 `power_log.csv` (4 rows): wall_w `[2.4,4.8,7.2,9.6]` at the same 1-minute
 timestamps. Left-Riemann energy = `(2.4+4.8+7.2)*60/3600 = 0.24 Wh`.
-At `$0.15/kWh` cost = `$0.00004`. Avg wall = 6.0 W, p95 wall = 9.6 W.
+At `$0.13/kWh` cost = `$0.00003`. Avg wall = 6.0 W, p95 wall = 9.6 W.
 With `battery_wh=45`: avg runtime 7.5 h, conservative (p95) 4.7 h.
 
 ---

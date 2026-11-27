@@ -19,6 +19,21 @@ full-screen dashboard that renders every second. It is a single command that
 opens everything — live temperature, power, cost, battery, throttling and the
 full analysis — over SSH or on the console.
 
+On startup the app immediately begins sampling **SoC temperature and wall
+power once per second** and records every sample. The default Overview screen
+shows, from top to bottom:
+
+1. current temperature (°C) and a labelled, multi-line graph of the temperature
+   history (with min/max labels and time span),
+2. current power (W) and a matching multi-line graph of the power history,
+3. session energy used (Wh) and its cost at the configured rate
+   (default **$0.13/kWh** = 13.0 cents/kWh), plus elapsed time and sample count.
+
+Both graphs autoscale to the terminal, cover the last five minutes once that
+much data exists, and fall back to a compact one-line sparkline on very short
+terminals. No extra packages are required: the dashboard uses only the Python
+standard library (`curses`), so it works over SSH.
+
 To print a saved report instead of opening the dashboard:
 
 ```bash
@@ -45,7 +60,8 @@ paths given to `view` are still interpreted relative to your current directory.
 
 The dashboard has exactly five tabs, always in this order:
 
-1. **Overview** — compact live temperature, power, cost and the verdict.
+1. **Overview** — live temperature graph, power graph and session energy/cost,
+   followed by the compact verdict and log summary.
 2. **Temperature** — min / average (± std dev) / median / p95 / max SoC temp,
    PMIC temperature, CPU load, ARM frequency, temperature distribution and ARM
    frequency distribution (all in one tab).
@@ -108,11 +124,11 @@ All settings live in `~/.config/pistats/config.json` (override the path with
 | Key | Default | Meaning |
 |---|---|---|
 | `render_interval_s` | `1.0` | Dashboard redraw interval (seconds) |
-| `sample_interval_s` | `1.0` | Temperature UI refresh interval (seconds; legacy key) |
+| `sample_interval_s` | `1.0` | Live sampling + Temperature UI refresh interval (seconds) |
 | `power_sample_interval_s` | `1.0` | Power / Battery UI refresh interval (seconds) |
 | `log_cadence_s` | `60` | How often samples are persisted to CSV |
 | `mode` | `both` | `temp`, `power` or `both` |
-| `rate_per_kwh` | `0.15` | Electricity price in $/kWh |
+| `rate_per_kwh` | `0.13` | Electricity price in $/kWh (13.0 cents) |
 | `battery_wh` | `45.0` | Battery capacity in Wh |
 | `wall_factor` | `1.0` | PMIC → wall power multiplier |
 | `wall_slope`, `wall_intercept` | `1.0`, `0.0` | Optional wall calibration |
@@ -125,9 +141,9 @@ sub-view with two choices:
 
 1. **Power (battery)** — edits `power_sample_interval_s` (default `1.0` s),
    which controls how often the Battery tab's cached context is refreshed.
-2. **Temperature** — edits `sample_interval_s` (default `1.0` s), the legacy
-   key controlling the Temperature and Performance tabs' cached context.
-   The Overview tab merges both caches.
+2. **Temperature** — edits `sample_interval_s` (default `1.0` s), which drives
+   the live per-second sampling loop and the Temperature / Performance tabs'
+   cached context. The Overview tab merges both caches.
 
 Use `↑` / `↓` to choose an option, `Enter` to edit its interval inline (type
 the seconds and press `Enter` to save, `Esc` to cancel), and `Esc` on the
@@ -244,6 +260,11 @@ rm -f /tmp/rpi5_temp_state_${UID} /tmp/thermal-scope-collector.pid
 
 - `temp_log.csv` — temperature log (one row per persisted sample).
 - `power_log.csv` — `timestamp,pmic_w,wall_w` power log.
+- `pistats_session.csv` — dedicated live session log, written once per second
+  by the dashboard (`timestamp,temp_c,wall_w`). It lives next to
+  `temp_log.csv`; override the path with `PISTATS_SESSION_LOG=/path/to/file.csv`.
+  The shared historical logs keep their existing collector format and cadence,
+  so starting the dashboard never adds duplicate rows to them.
 - `spikes.csv` — spike detection log (only created on 5°C+ jumps).
 - `/tmp/rpi5_temp_state_${UID}` — temporary EMA baseline state (cleared on reboot).
 - `/tmp/thermal-scope-collector.pid` — PID lock preventing concurrent runs.
@@ -344,7 +365,7 @@ for 1 hour, p95 still shows ~84 °C.
  POWER / ENERGY / BATTERY:
    PMIC rail sum        : 5.42 W   (wall est. 6.61 W, factor 1.0)
    ENERGY   1 h: 2.91 Wh   full log: 21.4 Wh
-   COST     @ $0.15/kWh → 1 h $0.00044 · today $0.011 · 30 d $0.32
+   COST     @ $0.13/kWh → 1 h $0.00038 · today $0.010 · 30 d $0.28
    BATTERY  45 Wh → ~8.3 h @ avg · ~7.5 h @ p95 (conservative)
 -----------------------------------------------------------------
  FINAL VERDICT & RECOMMENDATION:

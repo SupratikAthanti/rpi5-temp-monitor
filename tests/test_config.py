@@ -22,7 +22,7 @@ class TestConfigDefaults(unittest.TestCase):
         self.assertEqual(d['sample_interval_s'], 1.0)
         self.assertEqual(d['log_cadence_s'], 60)
         self.assertEqual(d['mode'], 'both')
-        self.assertEqual(d['rate_per_kwh'], 0.15)
+        self.assertEqual(d['rate_per_kwh'], 0.13)
         self.assertEqual(d['battery_wh'], 45.0)
         self.assertEqual(d['wall_factor'], 1.0)
         self.assertEqual(d['energy_windows_min'], [60, 120])
@@ -67,7 +67,7 @@ class TestConfigPath(unittest.TestCase):
         self.assertEqual(loaded['render_interval_s'], 2.0)
         self.assertEqual(loaded['mode'], 'power')
         # unchanged defaults survive
-        self.assertEqual(loaded['rate_per_kwh'], 0.15)
+        self.assertEqual(loaded['rate_per_kwh'], 0.13)
 
     def test_save_uses_path_override_argument(self):
         other = os.path.join(self.tmp.name, 'other', 'cfg.json')

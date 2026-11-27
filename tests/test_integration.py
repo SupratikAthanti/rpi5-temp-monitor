@@ -32,7 +32,7 @@ SPIKES_CSV = """timestamp,soc_temp_c,baseline_temp_c,delta_c,load_1m,culprit_app
 2026-11-21T10:03:00Z,90.0,70.0,20.0,3.0,opencode,opencode(80%)
 """
 
-CONFIG = {'rate_per_kwh': 0.15, 'battery_wh': 45.0, 'energy_windows_min': [60, 120]}
+CONFIG = {'rate_per_kwh': 0.13, 'battery_wh': 45.0, 'energy_windows_min': [60, 120]}
 
 
 class TestSyntheticReport(unittest.TestCase):
@@ -97,7 +97,7 @@ class TestSyntheticReport(unittest.TestCase):
     def test_energy_cost_and_battery_numbers(self):
         # Left-Riemann: (2.4 + 4.8 + 7.2) watts * 60 s / 3600 = 0.24 Wh.
         self.assertIn('0.24 Wh', self.report)
-        self.assertIn('$0.00004', self.report)
+        self.assertIn('$0.00003', self.report)  # 0.24 Wh @ $0.13/kWh
         self.assertIn('7.5 h', self.report)   # 45 Wh / 6.0 W avg
         self.assertIn('4.7 h', self.report)   # 45 Wh / 9.6 W p95 (conservative)
 

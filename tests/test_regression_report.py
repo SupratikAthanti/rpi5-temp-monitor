@@ -18,7 +18,7 @@ import analyze  # noqa: E402
 
 HEADER = ('timestamp,soc_temp_c,pmic_temp_c,load_1m,arm_freq_mhz,'
           'throttled_hex,top_proc,top_cpu_pct')
-CONFIG = {'rate_per_kwh': 0.15, 'battery_wh': 45.0,
+CONFIG = {'rate_per_kwh': 0.13, 'battery_wh': 45.0,
           'energy_windows_min': [60, 120]}
 
 

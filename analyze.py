@@ -511,7 +511,7 @@ def energy_wh(samples, window_minutes=None):
     return total_watt_seconds / 3600.0
 
 
-def cost_dollars(energy_wh_value, rate_per_kwh=0.15):
+def cost_dollars(energy_wh_value, rate_per_kwh=0.13):
     """Cost in dollars for ``energy_wh_value`` Wh at ``rate_per_kwh`` $/kWh."""
     return float(energy_wh_value) / 1000.0 * float(rate_per_kwh)
 
@@ -540,7 +540,7 @@ def battery_estimate(capacity_wh, avg_power_w, p95_power_w):
 def _power_section_lines(power_records, config):
     """Build the appended POWER / ENERGY / BATTERY report section."""
     cfg = config or {}
-    rate = float(cfg.get('rate_per_kwh', 0.15))
+    rate = float(cfg.get('rate_per_kwh', 0.13))
     battery = float(cfg.get('battery_wh', 45.0))
     windows = cfg.get('energy_windows_min') or [60, 120]
 

@@ -249,7 +249,7 @@ from `spikes.csv`.
 ║     … other rails                                                              ║
 ║     TOTAL (PMIC) 5.42 W     (EXT5V_V / BATT_V excluded: voltage-only)          ║
 ║   ENERGY   1 h: 2.91 Wh   2 h: 5.74 Wh   full log: 21.4 Wh                     ║
-║   COST     @ $0.15/kWh → 1 h $0.00044 · today $0.011 · 30 d $0.32              ║
+║   COST     @ $0.13/kWh → 1 h $0.00038 · today $0.010 · 30 d $0.28              ║
 ║   BATTERY  45 Wh → ~8.3 h @ avg · ~7.5 h @ p95 (conservative)                  ║
 ║            NOTE: PMIC excludes USB/fan/regulator losses; set wall factor       ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
@@ -273,7 +273,7 @@ Navigate with `↑`/`↓`, press `Enter` on a row to edit it, type the new value
 ║   Live sample interval      [ 1 s ]                                            ║
 ║   Persist to log every      [ 60 s ]                                           ║
 ║   Mode                      [ both ]     temp | power | both                   ║
-║   Electricity rate          [ $0.15 / kWh ]                                    ║
+║   Electricity rate          [ $0.13 / kWh ]                                    ║
 ║   Battery capacity          [ 45 Wh ]                                          ║
 ║   PMIC → wall factor        [ 1.00 ]                                           ║
 ║   Energy windows            [ 60,120 min ]                                     ║
