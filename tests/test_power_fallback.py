@@ -311,7 +311,8 @@ class TestLiveLoopWithoutCron(FallbackBase):
         last = {row['id']: row for row in frames[-1]}
         samples = last['overview.power_graph']['samples']
         self.assertEqual(len(samples), 3)
-        self.assertTrue(all(watts > 0.0 for _stamp, watts in samples))
+        self.assertTrue(all(
+            (tui._sample_parts(sample)[1] or 0.0) > 0.0 for sample in samples))
         self.assertIn('Power: live (no cron)', last['overview.status']['text'])
         import re
         match = re.search(r'(\d+\.\d{3}) Wh',

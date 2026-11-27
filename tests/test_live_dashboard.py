@@ -5,9 +5,12 @@ are patched, and the session log / config paths are redirected to temp dirs.
 """
 
 import csv
+import datetime
 import os
+import re
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -58,19 +61,29 @@ def frame_lines(screen):
     return lines
 
 
+def has_braille(text):
+    return any(0x2800 <= ord(char) <= 0x28FF for char in text)
+
+
+def braille_rows(lines):
+    """Plot rows that actually contain braille dots (header/ticks excluded)."""
+    return [line for line in lines[1:-2] if has_braille(line)]
+
+
 class TestGraphRendering(unittest.TestCase):
     def test_multi_line_plot_has_labels_and_varying_rows(self):
         lines = dash.render_graph(
             SERIES, width=60, height=6, title='TEMPERATURE HISTORY',
             unit='°C', current=50.5, now=1006)
-        self.assertEqual(len(lines), 8)  # header + 6 plot rows + axis
+        self.assertEqual(len(lines), 9)  # header + 6 plot rows + ticks + axis
         self.assertIn('TEMPERATURE HISTORY', lines[0])
         self.assertIn('now 50.5°C', lines[0])
-        self.assertIn('last 5m', lines[0])
-        self.assertGreaterEqual(sum('█' in line for line in lines[1:-1]), 3)
+        self.assertIn('last 30s', lines[0])  # adaptive floor, not last 5m
+        self.assertGreaterEqual(len(braille_rows(lines)), 3)
         self.assertIn('min 50.0°C', lines[-1])
         self.assertIn('max 62.0°C', lines[-1])
         self.assertIn('→', lines[-1])  # time span
+        self.assertGreaterEqual(len(re.findall(r'\d\d:\d\d:\d\d', lines[-2])), 2)
         for line in lines:
             self.assertLessEqual(len(line), 60)
 
@@ -78,25 +91,24 @@ class TestGraphRendering(unittest.TestCase):
         flat = [(1000 + i, 55.0) for i in range(10)]
         lines = dash.render_graph(flat, width=40, height=5, title='FLAT',
                                   unit='°C', now=1009)
-        plotted = [line for line in lines[1:-1] if '█' in line]
-        self.assertEqual(len(plotted), 1)
+        self.assertEqual(len(braille_rows(lines)), 1)
         self.assertIn('min 55.0°C', lines[-1])
         self.assertIn('max 55.0°C', lines[-1])
 
     def test_empty_and_single_sample_histories(self):
         empty = dash.render_graph([], width=40, height=4, title='TEMP')
-        self.assertTrue(any('no samples yet' in line for line in empty))
-        self.assertEqual(len(empty), 6)
+        self.assertTrue(any('waiting for samples' in line for line in empty))
+        self.assertEqual(len(empty), 7)
         one = dash.render_graph([(1000, 42.0)], width=40, height=4,
                                 title='TEMP', unit='°C')
-        self.assertTrue(any('█' in line for line in one[1:-1]))
+        self.assertTrue(braille_rows(one))
 
     def test_non_finite_and_negative_values_are_defensive(self):
         samples = [(1000, float('nan')), (1001, float('inf')),
                    (1002, -4.0), None, (1003, 'bad'), (1004, 10.0)]
         lines = dash.render_graph(samples, width=40, height=4, title='POWER',
                                   unit='W', nonnegative=True)
-        self.assertTrue(any('█' in line for line in lines[1:-1]))
+        self.assertTrue(braille_rows(lines))
         self.assertIn('min 0.0W', lines[-1])
         self.assertFalse(any('nan' in line.lower() for line in lines))
 
@@ -104,6 +116,149 @@ class TestGraphRendering(unittest.TestCase):
         lines = dash.render_graph(SERIES, width=14, height=2, title='TEMP')
         for line in lines:
             self.assertLessEqual(len(line), 14)
+
+    def test_braille_lines_are_thin_and_high_resolution(self):
+        lines = dash.render_graph(SERIES, width=40, height=4, title='TEMP',
+                                  unit='°C', now=1006)
+        plotted = braille_rows(lines)
+        self.assertGreaterEqual(len(plotted), 2)
+        self.assertFalse(any('█' in line or '░' in line for line in lines))
+        # 4 character rows -> up to 16 subpixel rows; each cell is one glyph.
+        dots = [ord(char) - 0x2800 for line in plotted for char in line
+                if 0x2800 <= ord(char) <= 0x28FF]
+        self.assertTrue(dots)
+        self.assertLessEqual(sum(bin(dot).count('1') for dot in dots) / len(dots),
+                             3.0)
+        self.assertGreater(len(plotted), 1)
+
+
+class TestAdaptiveGraphAxes(unittest.TestCase):
+    def test_window_text_formats_seconds_minutes_hours_and_days(self):
+        self.assertEqual(dash.format_window_s(47), '47s')
+        self.assertEqual(dash.format_window_s(720), '12m')
+        self.assertEqual(dash.format_window_s(3 * 3600), '3h')
+        self.assertEqual(dash.format_window_s(6 * 86400), '6d')
+
+    def test_window_grows_from_startup_to_weeks(self):
+        self.assertEqual(dash.adaptive_window_s(6), 30.0)
+        self.assertEqual(dash.adaptive_window_s(90), 120.0)
+        self.assertEqual(dash.adaptive_window_s(3 * 3600), 3 * 3600.0)
+        self.assertEqual(dash.adaptive_window_s(5 * 86400), 7 * 86400.0)
+        self.assertEqual(dash.adaptive_window_s(90 * 86400), 30 * 86400.0)
+
+    def test_header_shows_actual_adaptive_window(self):
+        base = 1_700_000_000
+        short = [(base + i, 50.0) for i in range(6)]
+        self.assertIn('last 30s', dash.render_graph(short, width=60,
+                      height=4, unit='°C', now=base + 5)[0])
+        hours = [(base + i * 900, 50.0 + i % 3) for i in range(20)]
+        self.assertIn('last 6h', dash.render_graph(hours, width=60,
+                      height=4, unit='°C', now=hours[-1][0])[0])
+        days = [(base + i * 86400, 50.0 + i % 3) for i in range(6)]
+        self.assertIn('last 7d', dash.render_graph(days, width=60,
+                      height=4, unit='°C', now=days[-1][0])[0])
+
+    def test_cross_day_ticks_carry_dates(self):
+        # 23:00 -> 01:00 local time the next day (fixed zone-free construction
+        # via a known epoch around UTC midnight).
+        moment = datetime.datetime(2026, 11, 27, 23, 0, 0)
+        base = moment.timestamp()
+        samples = [(base + i * 600, 50.0 + i % 2) for i in range(25)]
+        lines = dash.render_graph(samples, width=100, height=4, unit='°C',
+                                  now=samples[-1][0])
+        self.assertRegex(lines[-2], r'\d{2}-\d{2}\s+\d{2}:\d{2}')
+        self.assertRegex(lines[-1], r'\d{2}-\d{2} \d{2}:\d{2}→\d{2}-\d{2} \d{2}:\d{2}')
+
+    def test_week_long_ticks_use_dates(self):
+        base = 1_700_000_000
+        samples = [(base + i * 86400, 50.0 + i % 2) for i in range(14)]
+        lines = dash.render_graph(samples, width=80, height=4, unit='°C',
+                                  now=samples[-1][0])
+        self.assertRegex(lines[-2], r'\d{4}-\d{2}-\d{2}')
+
+    def test_min_max_envelope_keeps_spikes_in_long_series(self):
+        base = 1_700_000_000
+        # Flat samples at whole seconds; a short-lived spike between two of
+        # them would be lost by point interpolation but survives as a band.
+        samples = [dash.Band(base + i, 50.0, 50.0, 50.0) for i in range(120)]
+        samples.insert(60, dash.Band(base + 60.4, 50.0, 70.0, 60.0))
+        lines = dash.render_graph(samples, width=60, height=4, unit='°C',
+                                  window_s=120)
+        dots = [ord(char) - 0x2800 for line in braille_rows(lines)
+                for char in line if 0x2800 <= ord(char) <= 0x28FF]
+        # Top subpixel row (dot bits 0x01 / 0x11) is only reachable from 70 °C.
+        self.assertTrue(any(dot & 0x11 for dot in dots))
+        self.assertIn('max 70.0°C', lines[-1])
+        self.assertIn('min 50.0°C', lines[-1])
+
+    def test_startup_y_range_floors_prevent_magnification(self):
+        temp = dash.series_y_bounds(
+            [(1000, 50.0), (1001, 50.02), (1002, 50.04)], unit='°C')
+        self.assertGreaterEqual(temp[1] - temp[0], 2.0 - 1e-9)
+        power = dash.series_y_bounds(
+            [(1000, 6.0), (1001, 6.01)], unit='W', nonnegative=True)
+        self.assertGreaterEqual(power[1] - power[0], 1.0 - 1e-9)
+        self.assertGreaterEqual(power[0], 0.0)
+        # Real variation still autoscales beyond the floor.
+        wide = dash.series_y_bounds([(0, 10.0), (1, 90.0)], unit='°C')
+        self.assertAlmostEqual(wide[0], 10.0)
+        self.assertAlmostEqual(wide[1], 90.0)
+
+
+class TestCompactedHistory(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old = os.environ.get(dash.SESSION_LOG_ENV)
+        self.path = os.path.join(self.tmp.name, 'pistats_session.csv')
+        os.environ[dash.SESSION_LOG_ENV] = self.path
+
+    def tearDown(self):
+        if self.old is None:
+            os.environ.pop(dash.SESSION_LOG_ENV, None)
+        else:
+            os.environ[dash.SESSION_LOG_ENV] = self.old
+        self.tmp.cleanup()
+
+    def test_five_days_compact_into_bins_with_exact_energy(self):
+        recorder = dash.SessionRecorder(bucket_s=60.0, recent_window_s=30.0)
+        base = time.time() - 5 * 86400
+        raw = []
+        for index in range(120):
+            stamp = base + index * 3600.0
+            watts = 5.0 + index % 5
+            recorder.add(stamp, 50.0 + index % 7, watts)
+            raw.append((stamp, watts))
+        self.assertLessEqual(len(recorder.samples), 2)
+        self.assertGreater(len(recorder.buckets), 100)
+        self.assertEqual(recorder.sample_count, 120)
+        self.assertAlmostEqual(recorder.energy_wh(),
+                               dash.session_energy_wh(raw), places=9)
+        ctx = recorder.context(now=base + 119 * 3600.0)
+        self.assertIn('4d', ctx['session_elapsed'])
+        self.assertGreaterEqual(
+            ctx['session_temp_bands'][-1].timestamp -
+            ctx['session_temp_bands'][0].timestamp, 4 * 86400)
+        header = dash.render_graph(
+            ctx['session_temp_bands'], width=80, height=4,
+            unit='°C', now=ctx['session_now'])[0]
+        self.assertIn('last 7d', header)
+
+    def test_csv_is_read_once_at_startup_not_per_frame(self):
+        recorder = dash.SessionRecorder()
+        for index in range(3):
+            recorder.add(1_700_000_000 + index, 50.0 + index, 6.0)
+        with mock.patch.object(dash, 'read_session_samples',
+                               wraps=dash.read_session_samples) as reader:
+            recorder.load_history()
+            for _ in range(5):
+                recorder.context(now=1_700_000_004)
+        reader.assert_not_called()
+        # A fresh recorder does load the persisted history exactly once.
+        with mock.patch.object(dash, 'read_session_samples',
+                               wraps=dash.read_session_samples) as reader:
+            second = dash.SessionRecorder()
+        reader.assert_called_once()
+        self.assertEqual(second.sample_count, 3)
 
 
 class TestSessionMath(unittest.TestCase):
@@ -298,10 +453,10 @@ class TestDashboardFrame(unittest.TestCase):
         self.assertLess(y_temp_graph, y_power)
         self.assertLess(y_power, y_power_graph)
         self.assertLess(y_power_graph, y_energy)
-        temp_plots = sum('█' in lines[y] for y in range(
-            y_temp_graph + 1, y_power))
-        power_plots = sum('█' in lines[y] for y in range(
-            y_power_graph + 1, y_energy))
+        temp_plots = sum(has_braille(lines[y])
+                         for y in range(y_temp_graph + 1, y_power))
+        power_plots = sum(has_braille(lines[y])
+                          for y in range(y_power_graph + 1, y_energy))
         self.assertGreaterEqual(temp_plots, 3)
         self.assertGreaterEqual(power_plots, 3)
         self.assertTrue(any('min 50.0°C' in lines[y]

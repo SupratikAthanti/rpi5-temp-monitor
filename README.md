@@ -29,10 +29,17 @@ shows, from top to bottom:
 3. session energy used (Wh) and its cost at the configured rate
    (default **$0.13/kWh** = 13.0 cents/kWh), plus elapsed time and sample count.
 
-Both graphs autoscale to the terminal, cover the last five minutes once that
-much data exists, and fall back to a compact one-line sparkline on very short
-terminals. No extra packages are required: the dashboard uses only the Python
-standard library (`curses`), so it works over SSH.
+Both graphs are thin, high-resolution braille plots (two by four subpixels per
+character cell). Their time window adapts to the session: a 30-second floor at
+startup, then minutes, hours and finally days/weeks as history accumulates; the
+header shows the actual window (`last 47s`, `last 12m`, `last 3h`, `last 6d`).
+Several time ticks run along the x axis (with dates whenever the span crosses a
+day), and min/max values with units sit below the plot. Recent samples stay at
+1 Hz while older ones are folded into one-minute min/max/average buckets, so
+spikes survive downsampling and days or weeks of history stay affordable. Very
+short terminals fall back to a compact one-line braille trend. No extra
+packages are required: the dashboard uses only the Python standard library
+(`curses`), so it works over SSH.
 
 **No cron job is needed for live readings.** While the CLI is open it samples
 `vcgencmd pmic_read_adc` and the SoC temperature once per second; the power
@@ -283,7 +290,9 @@ rm -f /tmp/rpi5_temp_state_${UID} /tmp/thermal-scope-collector.pid
 - `pistats_session.csv` — dedicated live session log, written once per second
   by the dashboard (`timestamp,temp_c,wall_w`). It lives next to
   `temp_log.csv`; override the path with `PISTATS_SESSION_LOG=/path/to/file.csv`.
-  The shared historical logs keep their existing collector format and cadence,
+  The dashboard reads this file once at startup (never per frame) so saved days
+  or weeks of samples reappear in the Overview graphs and energy total. The
+  shared historical logs keep their existing collector format and cadence,
   so starting the dashboard never adds duplicate rows to them.
 - `spikes.csv` — spike detection log (only created on 5°C+ jumps).
 - `/tmp/rpi5_temp_state_${UID}` — temporary EMA baseline state (cleared on reboot).

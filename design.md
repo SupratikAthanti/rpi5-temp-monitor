@@ -146,6 +146,17 @@ Old workflows preserved as commands:
 ╚════════════════════════════════════════════════════════════════════════════════╝
 ```
 
+The two history graphs use Unicode braille cells (2 x 4 subpixels per character)
+instead of filled character rows. The displayed window follows a fixed ladder —
+30 s, 1/2/5/10/15/30 min, 1/3/6/12 h, 1/2/3/7/14/30 d — starting at a 30 s
+floor so startup noise is not magnified, and the header reports the chosen
+window. Recent samples stay at 1 Hz for an hour; older readings become
+one-minute min/max/avg buckets (30-day cap), which the renderer draws as
+per-column envelope strokes so spikes are not interpolated away. Multiple time
+ticks, dated when the window crosses days, sit under each plot, with unit-aware
+min/max floors (2 °C / 1 W) for tiny early variations. Energy is integrated
+from the compacted history with duration-weighted trapezoids.
+
 ---
 
 ## 6. Tab 2 — Temperature (stats **and** all distributions)

@@ -131,6 +131,42 @@ def _ctx_watts(value, places=2):
     return f'{number:.{places}f}' if math.isfinite(number) else '—'
 
 
+def _sample_parts(sample):
+    """Return ``(timestamp, value)`` for samples, bands or plain tuples."""
+    if isinstance(sample, dict):
+        return (sample.get('timestamp'),
+                sample.get('value', sample.get('watts', sample.get('wall_w'))))
+    if hasattr(sample, 'timestamp'):
+        value = getattr(sample, 'value', None)
+        if value is None:
+            value = getattr(sample, 'watts', getattr(sample, 'temp', None))
+        return sample.timestamp, value
+    try:
+        return sample[0], sample[-1]
+    except (TypeError, IndexError, KeyError):
+        return None, None
+
+
+def _graph_window_text(samples):
+    """Adaptive window label shared by the compact and full graph paths."""
+    stamps = []
+    for sample in samples or []:
+        stamp, _value = _sample_parts(sample)
+        try:
+            number = float(stamp)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(number):
+            stamps.append(number)
+    if not stamps:
+        return 'waiting for samples'
+    span = max(0.0, max(stamps) - min(stamps))
+    if _dashboard is None:
+        return 'last 5m'
+    return 'last ' + _dashboard.format_window_s(
+        _dashboard.adaptive_window_s(span))
+
+
 def _sparkline(values, width=12):
     """Tiny unicode bar sparkline for the Overview trend row."""
     bars = '▁▂▃▄▅▆▇█'
@@ -171,8 +207,10 @@ def build_tab_rows(tab, ctx=None):
                  'SoC ' + temp_now + ' °C  ·  p95 (1 h) ' +
                  _fmt(c.get('p95_temp'), '—') + ' °C'))
         temp_graph = _row('overview.temp_graph', 'TEMPERATURE HISTORY',
-                          'Temperature: ' + temp_now + ' °C · last 5 min')
-        temp_graph['samples'] = list(c.get('session_temp_samples') or [])
+                          'Temperature: ' + temp_now + ' °C · adaptive window')
+        # Compacted buckets carry min/max envelopes; plain samples still work.
+        temp_graph['samples'] = list(
+            c.get('session_temp_bands') or c.get('session_temp_samples') or [])
         temp_graph['unit'] = '°C'
         add(temp_graph)
         add(_row('overview.power', 'Power',
@@ -180,8 +218,9 @@ def build_tab_rows(tab, ctx=None):
                  ' W  ·  PMIC ' + _fmt(c.get('pmic_w'), '—') +
                  ' W  ·  Energy 1 h ' + _fmt(c.get('energy_1h'), '—') + ' Wh'))
         power_graph = _row('overview.power_graph', 'POWER HISTORY',
-                           'Wall power: ' + power_now + ' W · last 5 min')
-        power_graph['samples'] = list(c.get('session_power_samples') or [])
+                           'Wall power: ' + power_now + ' W · adaptive window')
+        power_graph['samples'] = list(
+            c.get('session_power_bands') or c.get('session_power_samples') or [])
         power_graph['unit'] = 'W'
         add(power_graph)
         add(_row('overview.energy', 'Session energy / cost',
@@ -1128,7 +1167,8 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
         drawn = set()
         cursor = 4
         bottom = height - 2
-        plot_h = max(0, min(8, (visible - 7) // 2))
+        # Each graph now needs two extra rows (x ticks + min/max footer).
+        plot_h = max(0, min(8, (visible - 9) // 2))
         compact = plot_h < 2
 
         def _draw_row(identifier):
@@ -1148,21 +1188,24 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
             samples = row.get('samples') or []
             unit = row.get('unit', '')
             label = ('> ' if pos == state['index'] else '  ') + row['label']
+            window_text = _graph_window_text(samples)
             if compact:
-                values = [v for _t, v in samples if v is not None]
-                spark = _sparkline(values, width=max(6, text_max // 3))
-                text = (label + '  ' + spark + '  ' +
-                        ('last 5m' if values else 'waiting for samples'))
+                values = [_sample_parts(sample)[1] for sample in samples]
+                values = [v for v in values if v is not None]
+                spark = (_dashboard.braille_sparkline(
+                    values, width=max(6, text_max // 3))
+                    if _dashboard else _sparkline(values))
+                text = label + '  ' + spark + '  ' + window_text
                 _lined(cursor, _clip(text, text_max), _style('label'))
                 cursor += 1
                 return
+            last_stamp, last_value = _sample_parts(samples[-1]) if samples else (
+                None, None)
             lines = _dashboard.render_graph(
                 samples, width=text_max - 1, height=plot_h,
                 title=label, unit=unit,
-                current=(samples[-1][1] if samples else None),
-                window_s=_dashboard.GRAPH_WINDOW_S,
-                now=(state.get('session_now') or
-                     (samples[-1][0] if samples else None)),
+                current=last_value,
+                now=(state.get('session_now') or last_stamp),
                 nonnegative=(unit == 'W'))
             for line in lines:
                 if cursor >= bottom:
