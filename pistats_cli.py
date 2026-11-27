@@ -11,6 +11,7 @@ import os
 import sys
 
 import analyze
+import power_source
 
 
 def build_parser():
@@ -41,6 +42,7 @@ def run_view(args):
         print(f'pistats: log file not found: {log}', file=sys.stderr)
         return 1
     power_log = getattr(args, 'power_log', None)
+    explicit = power_log is not None
     if power_log is None:
         adjacent = os.path.join(os.path.dirname(os.path.abspath(log)),
                                 'power_log.csv')
@@ -52,10 +54,25 @@ def run_view(args):
         config = pistats_config.load_config()
     except Exception:
         config = None
+
+    # No cron is needed: if the historical log is missing/empty/all-zero/stale,
+    # use live ADC samples (or the last live session) and label them as such.
+    resolution = power_source.resolve(
+        power_log=power_log, explicit=explicit,
+        wall_factor=(config or {}).get('wall_factor', 1.0))
+    report_kwargs = {}
+    if resolution['source'] == power_source.SOURCE_LOG:
+        report_kwargs['power_log_file'] = power_log
+    else:
+        report_kwargs.update({
+            'power_records': resolution['records'],
+            'power_source': resolution['label'],
+            'power_hint': resolution['hint'],
+        })
     try:
         report = analyze.build_report(
-            log, power_log_file=power_log, config=config,
-            range_spec=getattr(args, 'range_spec', None))
+            log, config=config, range_spec=getattr(args, 'range_spec', None),
+            **report_kwargs)
     except OSError as exc:
         print(f'pistats: could not read log: {exc}', file=sys.stderr)
         return 1

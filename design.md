@@ -328,10 +328,21 @@ Press `?` to open the list; typing filters it; `↑`/`↓` selects, `Enter` runs
 
 ## 11. How the two halves work together
 
-- **Cron** samples once a minute in the background (`collect.sh --mode both`) — the
-  same always-on pipeline as before, now with power and battery.
-- **`python3 pistats.py`** renders at 1 Hz from in-memory samples. Only its configurable
-  1/min persistence writes to CSV, using the same collector lock, so no duplicate rows.
+- **Cron is optional.** It samples once a minute in the background
+  (`collect.sh --mode both`) for always-on history; live CLI readings do *not*
+  depend on it.
+- **`python3 pistats.py`** renders at 1 Hz from in-memory samples and reads the
+  PMIC ADC itself. Only its configurable 1/min persistence writes to CSV, using
+  the same collector lock, so no duplicate rows. Readings stop when the CLI
+  closes, by design.
+- The real ADC format is `RAIL_A current(N)=<float>A` / `RAIL_V volt(N)=<float>V`
+  (two tokens per line); `power_read.parse_pmic_adc` also accepts the legacy
+  `RAIL A <float>` fixture format and combines `_A` currents with `_V` voltages.
+- When `power_log.csv` is missing, empty, all-zero or stale (>5 min), the other
+  UI paths (Battery tab, `/report`, `view`) fall back to live session samples
+  via `power_source.resolve()` and surface the source label `live (no cron)`.
+  Explicit `--power-log` files keep their historical behaviour. With no ADC and
+  no log the state is `unavailable` plus a hint — never invented zeros.
 - Both the TUI and `python3 pistats.py view` call the **same** `analyze.py` functions — numbers
   always agree.
 - The tabs are a different presentation of the existing report data, not a replacement.

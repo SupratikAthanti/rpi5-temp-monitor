@@ -106,6 +106,106 @@ class TestPmicAdcParsing(unittest.TestCase):
         self.assertAlmostEqual(rails['RAIL_X'], 0.6, places=6)
 
 
+# Real ``vcgencmd pmic_read_adc`` output on a Raspberry Pi 5: two tokens per
+# line, with the value embedded inside the second one.
+REAL_ADC_SAMPLE = """\
+   3V7_WL_SW_A current(0)=0.10247270A
+   3V3_SYS_A current(1)=0.05757987A
+   1V8_SYS_A current(2)=0.19421010A
+  VDD_CORE_A current(7)=2.66114000A
+     EXT5V_A current(24)=9.00000000A
+      BATT_A current(25)=8.00000000A
+ 3V7_WL_SW_V volt(8)=3.65894600V
+   3V3_SYS_V volt(9)=3.32302500V
+   1V8_SYS_V volt(10)=1.80610300V
+  VDD_CORE_V volt(15)=0.82708100V
+     EXT5V_V volt(24)=5.14292000V
+      BATT_V volt(25)=4.10000000V
+"""
+
+
+class TestRealPmicAdcFormat(unittest.TestCase):
+    """Regression tests for the actual firmware output format (two tokens)."""
+
+    def test_real_adc_text_parses_every_board_rail(self):
+        rails = power_read.parse_pmic_adc(REAL_ADC_SAMPLE)
+        for base in ('3V7_WL_SW', '3V3_SYS', '1V8_SYS', 'VDD_CORE'):
+            self.assertIn(base, rails)
+            self.assertGreater(rails[base], 0.0)
+        self.assertAlmostEqual(
+            rails['3V7_WL_SW'], 3.65894600 * 0.10247270, places=8)
+        self.assertAlmostEqual(
+            rails['VDD_CORE'], 0.82708100 * 2.66114000, places=8)
+
+    def test_real_adc_excludes_ext5v_and_batt_even_with_current(self):
+        rails = power_read.parse_pmic_adc(REAL_ADC_SAMPLE)
+        for excluded in ('EXT5V', 'BATT', 'EXT5V_V', 'BATT_V',
+                         'EXT5V_A', 'BATT_A'):
+            self.assertNotIn(excluded, rails)
+
+    def test_real_adc_dual_phase_currents_are_summed(self):
+        text = (
+            'VDD_CORE_A current(7)=0.25A\n'
+            'VDD_CORE_A current(7)=0.75A\n'
+            'VDD_CORE_V volt(15)=0.80V\n'
+        )
+        rails = power_read.parse_pmic_adc(text)
+        self.assertAlmostEqual(rails['VDD_CORE'], 0.8 * (0.25 + 0.75), places=8)
+
+    def test_real_adc_identical_duplicate_lines_collapsed(self):
+        line = 'VDD_CORE_A current(7)=0.25A\n'
+        text = (line + line + line +
+                'VDD_CORE_V volt(15)=0.80V\n'
+                'VDD_CORE_V volt(15)=0.80V\n')
+        rails = power_read.parse_pmic_adc(text)
+        self.assertAlmostEqual(rails['VDD_CORE'], 0.8 * 0.25, places=8)
+
+    def test_real_adc_missing_voltage_is_excluded(self):
+        text = (
+            'CURRENT_ONLY_A current(3)=1.50A\n'
+            'VOLT_ONLY_V volt(4)=1.80V\n'
+        )
+        rails = power_read.parse_pmic_adc(text)
+        self.assertEqual(rails, {})
+
+    def test_keywords_are_case_insensitive_and_extra_tokens_ignored(self):
+        text = (
+            '  vdd_core_a CURRENT (7) = 0.50a  # extra\n'
+            '  VDD_CORE_V Volt(15)=0.80V trailing\n'
+        )
+        rails = power_read.parse_pmic_adc(text)
+        self.assertAlmostEqual(rails['VDD_CORE'], 0.4, places=8)
+
+    def test_same_base_name_works_for_both_units(self):
+        text = 'RAIL current(0)=2.0A\nRAIL volt(1)=1.5V\n'
+        self.assertAlmostEqual(power_read.parse_pmic_adc(text)['RAIL'],
+                               3.0, places=8)
+
+    def test_non_finite_values_are_skipped(self):
+        text = (
+            'NAN_RAIL_A current(0)=nanA\n'
+            'NAN_RAIL_V volt(1)=1.0V\n'
+            'INF_RAIL_A current(2)=infA\n'
+            'INF_RAIL_V volt(3)=1.0V\n'
+            'HUGE_RAIL_A current(4)=1e9999A\n'
+            'HUGE_RAIL_V volt(5)=1.0V\n'
+            'GOOD_RAIL_A current(6)=0.10A\n'
+            'GOOD_RAIL_V volt(7)=1.0V\n'
+        )
+        rails = power_read.parse_pmic_adc(text)
+        self.assertEqual(set(rails), {'GOOD_RAIL'})
+        self.assertAlmostEqual(rails['GOOD_RAIL'], 0.1, places=8)
+
+    def test_read_power_returns_positive_watts_from_realistic_fixture(self):
+        env = {'FAKE_PMIC_ADC': REAL_ADC_SAMPLE, 'WALL_FACTOR': '1.2'}
+        snap = power_read.read_power(env=env)
+        self.assertGreater(snap['pmic_w'], 0.0)
+        self.assertAlmostEqual(snap['wall_w'], snap['pmic_w'] * 1.2, places=8)
+        self.assertTrue(snap['rails'])
+        self.assertNotIn('EXT5V', snap['rails'])
+        self.assertNotIn('BATT', snap['rails'])
+
+
 class TestWallFactorMath(unittest.TestCase):
     """Expected interface: analyze.pmic_to_wall / analyze.calibrated_wall_w."""
 

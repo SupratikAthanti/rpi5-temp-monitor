@@ -537,8 +537,16 @@ def battery_estimate(capacity_wh, avg_power_w, p95_power_w):
     }
 
 
-def _power_section_lines(power_records, config):
-    """Build the appended POWER / ENERGY / BATTERY report section."""
+_UNAVAILABLE_SOURCE = 'unavailable'
+
+
+def _power_section_lines(power_records, config, source=None, hint=None):
+    """Build the appended POWER / ENERGY / BATTERY report section.
+
+    ``source`` / ``hint`` describe where the readings came from (a saved
+    ``power_log.csv`` or live ADC samples), so a live report is never mistaken
+    for a historical one.
+    """
     cfg = config or {}
     rate = float(cfg.get('rate_per_kwh', 0.13))
     battery = float(cfg.get('battery_wh', 45.0))
@@ -560,12 +568,21 @@ def _power_section_lines(power_records, config):
     lines = [
         '-' * 65,
         ' POWER / ENERGY / BATTERY:',
+    ]
+    if source:
+        lines.append(f'   Source                 : {source}')
+        if hint:
+            lines.append(f'   Source note            : {hint}')
+    lines.extend([
         f"   Live PMIC sum          : {last['pmic_w']:6.2f} W"
         f"   wall est. {last['wall_w']:.2f} W",
-    ]
+    ])
     for minutes in windows:
         wh = energy_wh(power_records, window_minutes=float(minutes))
         lines.append(f'   Energy ({minutes:g} min window) : {wh:.2f} Wh')
+    if source and source != 'log' and len(power_records) < 2:
+        lines.append('   NOTE: one live sample only; energy/cost accumulate '
+                     'while the CLI stays open.')
     lines.extend([
         f'   Energy (full log)      : {full_wh:.2f} Wh',
         f'   Cost (full log)        : ${cost:.5f} @ ${rate:.2f}/kWh',
@@ -577,11 +594,30 @@ def _power_section_lines(power_records, config):
     return lines
 
 
-def build_report(log_file, power_log_file=None, config=None, range_spec=None):
+def _power_unavailable_lines(hint=None):
+    """Honest placeholder when neither a log nor a live ADC is readable."""
+    message = hint or (
+        'No power log and no readable PMIC ADC; no power figures can be shown.')
+    return [
+        '-' * 65,
+        ' POWER / ENERGY / BATTERY:',
+        f'   Source                 : {_UNAVAILABLE_SOURCE}',
+        f'   {message}',
+        '   NOTE: no hardware values are invented; open the live CLI on the '
+        'Pi for readings.',
+    ]
+
+
+def build_report(log_file, power_log_file=None, config=None, range_spec=None,
+                 power_records=None, power_source=None, power_hint=None):
     """Build and return the complete text report (does not print).
 
-    Preserves every legacy README report field and, when a readable power log
-    is supplied, appends a POWER / ENERGY / BATTERY section.
+    Preserves every legacy README report field and appends a
+    POWER / ENERGY / BATTERY section when a readable power log is supplied.
+    ``power_records`` / ``power_source`` / ``power_hint`` let callers (the TUI
+    command palette and ``pistats.py view``) pass live ADC samples instead of
+    a stale or missing ``power_log.csv``; explicitly supplied power logs keep
+    their historical behaviour unchanged.
     """
     records = parse_csv_file(log_file)
     if range_spec:
@@ -715,11 +751,19 @@ def build_report(log_file, power_log_file=None, config=None, range_spec=None):
     for reason in verdict['reasons']:
         lines.append(f'      - {reason}')
 
-    power_records = parse_power_log(power_log_file) if power_log_file else []
+    if power_records is None:
+        power_records = parse_power_log(power_log_file) if power_log_file else []
+        if power_records and power_source is None:
+            power_source = 'log'
+    else:
+        power_records = list(power_records)
     if range_spec:
         power_records = filter_records_by_range(power_records, range_spec)
     if power_records:
-        lines.extend(_power_section_lines(power_records, config))
+        lines.extend(_power_section_lines(
+            power_records, config, source=power_source, hint=power_hint))
+    elif power_source == _UNAVAILABLE_SOURCE:
+        lines.extend(_power_unavailable_lines(power_hint))
 
     lines.append('=' * 65)
     return '\n'.join(lines) + '\n'

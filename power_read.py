@@ -6,25 +6,126 @@ power when it has at least one amps reading *and* at least one volts reading:
 
     watts(rail) = max(voltage readings) * sum(current readings)
 
-Rails that are voltage-only (including the explicitly excluded EXT5V_V and
-BATT_V rails) are omitted, because they do not represent on-board consumption.
+Rails that are voltage-only (including the explicitly excluded EXT5V and BATT
+rails) are omitted, because they do not represent on-board consumption.
+
+Two ADC line formats are accepted:
+
+* the real Raspberry Pi 5 firmware output, where the value is embedded in the
+  second whitespace-separated token::
+
+      3V7_WL_SW_A current(0)=0.10247270A
+      3V7_WL_SW_V volt(8)=3.65894600V
+
+* the legacy three-field fixture format ``RAIL A 1.23`` / ``RAIL V 3.30``.
+
+Current rails (``BASE_A``) and their matching voltage rails (``BASE_V``) are
+normalised to the same base name before combining; a bare ``BASE`` works for
+both units as well.
 """
 
+import math
 import os
+import re
 import subprocess
 import sys
 
 # These rails are measured for monitoring only; they must never be counted as
-# board power, even when a (spurious) current reading is present.
+# board power, even when a (spurious) current reading is present.  Names are
+# normalised to their base form, so ``EXT5V_V`` / ``EXT5V_A`` / ``EXT5V`` are
+# all excluded, as are the equivalent BATT spellings.
 EXCLUDE_VOLTAGE_ONLY_RAILS = {"EXT5V_V", "BATT_V"}
+_EXCLUDE_BASES = {"EXT5V", "BATT"}
+
+# A permissive finite number: integer, decimal, or scientific notation.
+_NUMBER = r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?'
+
+# Real pmic_read_adc line: "RAIL current(0)=0.123A" / "RAIL volt(8)=3.30V".
+# Trailing tokens are ignored, whitespace around every component is optional
+# and the index inside the parentheses is optional as well.
+_REAL_LINE_RE = re.compile(
+    r'^(?P<rail>\S+)\s+(?P<kind>current|volt)\s*\(\s*\d*\s*\)\s*=\s*'
+    r'(?P<value>' + _NUMBER + r')\s*(?P<unit>[AaVv])?',
+    re.IGNORECASE)
+
+# Legacy fixture line: "RAIL 1.23A" (the value and unit in one token).
+_VALUE_UNIT_RE = re.compile(
+    r'^(' + _NUMBER + r')\s*([AaVv])$', re.IGNORECASE)
+
+
+def _finite(value):
+    """Return a finite float, or ``None`` for missing / malformed values."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _rail_base(rail):
+    """Normalise a rail name to ``(BASE, UNIT_SUFFIX)``.
+
+    A trailing ``_A`` / ``_V`` is stripped so ``3V7_WL_SW_A`` and
+    ``3V7_WL_SW_V`` share the base ``3V7_WL_SW``.  Names such as ``EXT5V``
+    (which merely end in ``V``) are left untouched.
+    """
+    name = str(rail).strip()
+    upper = name.upper()
+    if len(name) >= 2 and name[-2] == '_' and upper[-1] in ('A', 'V'):
+        return name[:-2].upper(), upper[-1]
+    return upper, None
+
+
+def _parse_line(line):
+    """Return ``(base, unit, value)`` for one ADC line, or ``None``."""
+    text = str(line).strip()
+    if not text:
+        return None
+
+    # Preferred path: real firmware output (value inside the second token).
+    match = _REAL_LINE_RE.match(text)
+    if match:
+        kind = match.group('kind').lower()
+        unit = 'A' if kind == 'current' else 'V'
+        suffix = (match.group('unit') or '').upper()
+        if suffix and suffix != unit:
+            return None
+        value = _finite(match.group('value'))
+        if value is None:
+            return None
+        return _rail_base(match.group('rail'))[0], unit, value
+
+    # Fallback path: legacy three-field fixtures such as "RAIL A 1.23".
+    tokens = text.split()
+    if len(tokens) < 2:
+        return None
+    base = _rail_base(tokens[0])[0]
+    for index, token in enumerate(tokens[1:], 1):
+        upper = token.upper()
+        if upper in ('A', 'V') and index + 1 < len(tokens):
+            value = _finite(tokens[index + 1])
+            if value is not None:
+                return base, upper, value
+        value = _finite(token)
+        if value is not None and index + 1 < len(tokens):
+            next_unit = tokens[index + 1].upper()
+            if next_unit in ('A', 'V'):
+                return base, next_unit, value
+        pair = _VALUE_UNIT_RE.match(token)
+        if pair:
+            value = _finite(pair.group(1))
+            if value is not None:
+                return base, pair.group(2).upper(), value
+    return None
 
 
 def parse_pmic_adc(text):
-    """Return ``{rail_name: watts}`` parsed from raw pmic_read_adc text.
+    """Return ``{rail_base: watts}`` parsed from raw pmic_read_adc text.
 
     Malformed lines are skipped, whitespace is arbitrary, exactly duplicated
     ``(rail, unit, value)`` triples are collapsed and multiple distinct current
-    readings for one rail are summed (dual-phase rails).
+    readings for one rail are summed (dual-phase rails).  Current and voltage
+    names are normalised to a common base before they are combined.
     """
     rails = {}
     if not text:
@@ -35,31 +136,20 @@ def parse_pmic_adc(text):
     voltages = {}
 
     for line in str(text).splitlines():
-        parts = line.split()
-        if len(parts) != 3:
+        parsed = _parse_line(line)
+        if parsed is None:
             continue
-        rail, unit, raw_value = parts
-        unit = unit.upper()
-        if unit not in ("A", "V"):
+        rail, unit, value = parsed
+        if rail in _EXCLUDE_BASES:
             continue
-        try:
-            value = float(raw_value)
-        except (TypeError, ValueError):
-            continue
-
         triple = (rail, unit, value)
         if triple in seen:
             continue
         seen.add(triple)
-
-        if unit == "A":
-            currents.setdefault(rail, []).append(value)
-        else:
-            voltages.setdefault(rail, []).append(value)
+        target = currents if unit == 'A' else voltages
+        target.setdefault(rail, []).append(value)
 
     for rail, amps in currents.items():
-        if rail in EXCLUDE_VOLTAGE_ONLY_RAILS:
-            continue
         if rail not in voltages:
             continue
         rails[rail] = max(voltages[rail]) * sum(amps)
@@ -118,7 +208,7 @@ def read_power(env=None):
             wall_factor = float(override)
         except (TypeError, ValueError):
             pass
-    if wall_factor <= 0:
+    if not math.isfinite(wall_factor) or wall_factor <= 0:
         wall_factor = 1.0
 
     return {

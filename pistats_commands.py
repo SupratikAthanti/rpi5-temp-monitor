@@ -194,6 +194,16 @@ def _default_report_fn(data_dir):
         power = os.path.join(data_dir, 'power_log.csv')
         if not os.path.exists(power):
             power = None
+        try:
+            import power_source
+            resolution = power_source.resolve(power_log=power)
+            if resolution['source'] != power_source.SOURCE_LOG:
+                kwargs.setdefault('power_records', resolution['records'])
+                kwargs.setdefault('power_source', resolution['label'])
+                kwargs.setdefault('power_hint', resolution['hint'])
+                return analyze.build_report(log, **kwargs)
+        except ImportError:  # pragma: no cover - standalone module use
+            pass
         return analyze.build_report(log, power_log_file=power, **kwargs)
     return build
 

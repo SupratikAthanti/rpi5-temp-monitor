@@ -9,6 +9,7 @@ module so the dashboard runs on a stock RPi 5 with zero extra installs.  If
 required.
 """
 
+import math
 import os
 import re
 import subprocess
@@ -27,11 +28,13 @@ try:
     import pistats_commands as _commands
     import pistats_dashboard as _dashboard
     import power_read
+    import power_source as _power_source
 except ImportError:  # pragma: no cover - only when run outside the repo
     _config = None
     _commands = None
     _dashboard = None
     power_read = None
+    _power_source = None
 
 TABS = ['Overview', 'Temperature', 'Performance', 'Battery', 'Config']
 DEFAULT_RENDER_INTERVAL_S = 1.0
@@ -119,6 +122,15 @@ def _fmt(value, default='—'):
     return default if value in (None, '') else str(value)
 
 
+def _ctx_watts(value, places=2):
+    """Format live watts, or ``—`` when no ADC reading is available."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return '—'
+    return f'{number:.{places}f}' if math.isfinite(number) else '—'
+
+
 def _sparkline(values, width=12):
     """Tiny unicode bar sparkline for the Overview trend row."""
     bars = '▁▂▃▄▅▆▇█'
@@ -181,7 +193,9 @@ def build_tab_rows(tab, ctx=None):
         add(_row('overview.status', 'OVERVIEW',
                  'Mode: ' + _fmt(c.get('mode'), 'both') +
                  '  ·  Render: ' + _fmt(c.get('render_interval_s'), '1 s') +
-                 '  ·  Session: ' + _fmt(c.get('session_time'), '00:00:00'),
+                 '  ·  Session: ' + _fmt(c.get('session_time'), '00:00:00') +
+                 '  ·  Power: ' + _fmt(c.get('power_source_label'),
+                                      'unavailable'),
                  'section'))
         add(_row('overview.cost', 'Cost / Battery / Cron',
                  'Cost today ' + _fmt(c.get('cost'), '$0.000') +
@@ -296,6 +310,11 @@ def build_tab_rows(tab, ctx=None):
 
     if tab == 'Battery':
         add(_row('bat.live', 'LIVE POWER', 'LIVE POWER', 'section'))
+        add(_row('bat.source', 'DATA SOURCE',
+                 'Power data: ' + _fmt(c.get('power_source_label'),
+                                       'unavailable') +
+                 '  ·  ' + _fmt(c.get('power_source_hint'),
+                                'no cron required for live readings')))
         add(_row('bat.pmic', 'PMIC rail sum',
                  'PMIC rail sum ' + _fmt(c.get('pmic_w'), '—') +
                  ' W   wall est. ' + _fmt(c.get('wall_w'), '—') +
@@ -664,10 +683,13 @@ def _first_log():
     return DEFAULT_TEMP_LOG if os.path.exists(DEFAULT_TEMP_LOG) else 'temp_log.csv'
 
 
-def build_context(config=None):
+def build_context(config=None, recorder=None, live=None):
     """Build a best-effort snapshot used to populate tab rows.
 
     Never raises: missing logs / hardware simply produce placeholder values.
+    ``recorder`` (the live session recorder) and an already-taken ``live`` ADC
+    snapshot are optional; when supplied they let the UI show live energy /
+    cost instead of a stale ``power_log.csv``.
     """
     cfg = dict(config or {})
     if _config:
@@ -738,15 +760,37 @@ def build_context(config=None):
             ctx['span'] = f"{records[0]['timestamp']} → {records[-1]['timestamp']}"
 
         power_path = os.environ.get('PISTATS_POWER_LOG') or DEFAULT_POWER_LOG
-        precords = analyze.parse_power_log(power_path)
-        live = power_read.read_power()
-        ctx['rails'] = live['rails']
-        ctx['pmic_w'] = f"{live['pmic_w']:.2f}"
-        ctx['wall_w'] = f"{live['wall_w']:.2f}"
+        if live is None:
+            try:
+                live = power_read.read_power()
+            except Exception:
+                live = None
+        live = live or {}
+        has_adc = bool(live.get('rails'))
+        ctx['rails'] = live.get('rails') or {}
+        ctx['pmic_w'] = _ctx_watts(live.get('pmic_w')) if has_adc else '—'
+        ctx['wall_w'] = _ctx_watts(live.get('wall_w')) if has_adc else '—'
         ctx['wall_factor'] = cfg.get('wall_factor', 1.0)
         ctx['rate'] = cfg.get('rate_per_kwh', 0.13)
         ctx['battery_wh'] = cfg.get('battery_wh', 45.0)
         ctx['cron_status'] = os.environ.get('PISTATS_CRON_STATUS', 'STOPPED')
+
+        # Historical power logs are convenient, never required: fall back to
+        # live session samples when the log is missing/empty/all-zero/stale.
+        if _power_source is not None:
+            resolution = _power_source.resolve(
+                power_log=power_path, recorder=recorder, live=live,
+                explicit=bool(os.environ.get('PISTATS_POWER_LOG')),
+                wall_factor=cfg.get('wall_factor', 1.0), read_live=False)
+            precords = resolution['records']
+            ctx['power_source'] = resolution['source']
+            ctx['power_source_label'] = resolution['label']
+            ctx['power_source_hint'] = resolution['hint']
+        else:  # pragma: no cover - only when the module cannot be imported
+            precords = analyze.parse_power_log(power_path)
+            ctx['power_source'] = 'log' if precords else 'unavailable'
+            ctx['power_source_label'] = 'log' if precords else 'unavailable'
+            ctx['power_source_hint'] = ''
         if precords:
             ctx['energy_full'] = f"{analyze.energy_wh(precords):.2f}"
             wall_w = [r['wall_w'] for r in precords]
@@ -765,6 +809,10 @@ def build_context(config=None):
         ctx['spikes'] = spikes
         ctx['spike_count'] = len(spikes)
         ctx['spike_note'] = analyze.frequency_weighted_note(spikes, len(records))
+        if recorder is not None and _dashboard is not None:
+            # Any caller of build_context (not just the loop) can show the
+            # live graphs / energy when the historical log is unusable.
+            ctx.update(recorder.context(cfg.get('rate_per_kwh', 0.13)))
     except Exception:
         pass
     return ctx
@@ -808,6 +856,16 @@ def _command_context(state, cfg):
         power = os.environ.get('PISTATS_POWER_LOG') or DEFAULT_POWER_LOG
         if not os.path.exists(power):
             power = None
+        if _power_source is not None:
+            resolution = _power_source.resolve(
+                power_log=power,
+                explicit=bool(os.environ.get('PISTATS_POWER_LOG')),
+                wall_factor=cfg.get('wall_factor', 1.0))
+            if resolution['source'] != _power_source.SOURCE_LOG:
+                kwargs.setdefault('power_records', resolution['records'])
+                kwargs.setdefault('power_source', resolution['label'])
+                kwargs.setdefault('power_hint', resolution['hint'])
+                return analyze.build_report(_first_log(), **kwargs)
         return analyze.build_report(_first_log(), power_log_file=power,
                                     **kwargs)
 
@@ -1359,6 +1417,7 @@ def _tui_loop(stdscr, cfg):
     recorder = (_dashboard.SessionRecorder(session_log) if _dashboard else None)
     last_sample_time = float('-inf')
     last_sample = None
+    last_live = None
 
     while not state['quit']:
         now = time.monotonic()
@@ -1376,8 +1435,10 @@ def _tui_loop(stdscr, cfg):
             watts = None
             if power_read is not None:
                 try:
-                    watts = (power_read.read_power() or {}).get('wall_w')
+                    last_live = power_read.read_power()
+                    watts = (last_live or {}).get('wall_w')
                 except Exception:
+                    last_live = None
                     watts = None
             last_sample = recorder.add(time.time(), temp, watts)
             last_sample_time = now
@@ -1386,11 +1447,11 @@ def _tui_loop(stdscr, cfg):
         # an edit through the Sampling sub-view takes effect immediately.
         if now - last_temp_time >= _interval_seconds(
                 cfg.get('sample_interval_s')):
-            temp_ctx = build_context(cfg)
+            temp_ctx = build_context(cfg, recorder=recorder, live=last_live)
             last_temp_time = now
         if now - last_power_time >= _interval_seconds(
                 cfg.get('power_sample_interval_s')):
-            power_ctx = build_context(cfg)
+            power_ctx = build_context(cfg, recorder=recorder, live=last_live)
             last_power_time = now
         tab = TABS[state['tab_index']]
         if tab == 'Battery':

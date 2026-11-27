@@ -34,6 +34,14 @@ much data exists, and fall back to a compact one-line sparkline on very short
 terminals. No extra packages are required: the dashboard uses only the Python
 standard library (`curses`), so it works over SSH.
 
+**No cron job is needed for live readings.** While the CLI is open it samples
+`vcgencmd pmic_read_adc` and the SoC temperature once per second; the power
+graph, accumulated watt-hours and cost at $0.13/kWh update live, and stop when
+you close it. Cron is only for *always-on background history* in
+`power_log.csv`. The Overview status row and the Battery tab show the active
+source as `Power: live (no cron)` or `Power: log`, so live numbers are never
+mistaken for saved ones.
+
 To print a saved report instead of opening the dashboard:
 
 ```bash
@@ -167,6 +175,18 @@ in **Wh** (watt-hours), applies your **cost** rate in **$/kWh** (kilowatt-hours)
 for $/day and $/30-day figures, and estimates **battery** runtime in hours from
 the configured capacity in Wh. The Battery tab shows the rail breakdown, energy
 windows, cost and conservative (p95-based) runtime.
+
+### Live vs saved power data
+
+The Battery tab, `/report` and `python3 pistats.py view` prefer a healthy
+`power_log.csv`. When that log is missing, empty, all zeros or older than five
+minutes, they fall back to live samples from the open session (or the last
+`pistats_session.csv`) and label the result `live (no cron)`. An explicitly
+supplied `--power-log` historical file is always used as-is, so saved reports
+still work. If neither a recent log nor a readable PMIC ADC exists, PiStats
+shows an honest `unavailable` state with a hint instead of misleading zeros —
+it never invents hardware data. Restart an already-running CLI after upgrading
+so it picks up the parser fix.
 
 ---
 
