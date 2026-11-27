@@ -9,6 +9,7 @@ module so the dashboard runs on a stock RPi 5 with zero extra installs.  If
 required.
 """
 
+import datetime
 import math
 import os
 import re
@@ -168,7 +169,7 @@ def _graph_window_text(samples):
 
 
 def _sparkline(values, width=12):
-    """Tiny unicode bar sparkline for the Overview trend row."""
+    """Tiny unicode bar sparkline for compact graph fallbacks."""
     bars = '▁▂▃▄▅▆▇█'
     nums = []
     for v in (values or []):
@@ -184,6 +185,68 @@ def _sparkline(values, width=12):
     step = max(1, len(nums) // width)
     picked = nums[::step][:width]
     return ''.join(bars[min(7, int((v - lo) / (hi - lo) * 7))] for v in picked)
+
+
+_MONTH_ABBR = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+
+
+def _parse_log_timestamp(value):
+    """Parse an ISO-8601 timestamp (``...Z`` or an explicit offset)."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text[-1:] in ('Z', 'z'):
+        text = text[:-1] + '+00:00'
+    try:
+        return datetime.datetime.fromisoformat(text)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _format_log_span(start, end):
+    """Human-readable span with a duration, e.g. ``Nov 22 01:45 → 02:46 (1h 01m)``.
+
+    Same-day ranges omit the repeated date; ranges crossing a day (or a year)
+    spell out both dates.  Missing or malformed timestamps yield ``—``.
+    """
+    first = _parse_log_timestamp(start)
+    last = _parse_log_timestamp(end)
+    if first is None or last is None:
+        return '—'
+
+    # Normalise aware timestamps to UTC so naive and aware values never get
+    # compared directly, and offsets cannot distort the reported duration.
+    if first.tzinfo is not None:
+        first = first.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    if last.tzinfo is not None:
+        last = last.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+
+    seconds = int(abs((last - first).total_seconds()))
+    if seconds < 60:
+        duration = f'{seconds}s'
+    elif seconds < 3600:
+        duration = f'{seconds // 60}m'
+    else:
+        days, rest = divmod(seconds, 86400)
+        hours, rest = divmod(rest, 3600)
+        minutes = rest // 60
+        duration = (f'{days}d {hours:02d}h {minutes:02d}m' if days else
+                    f'{hours}h {minutes:02d}m')
+
+    def stamp(dt, with_date=True):
+        clock = f'{dt.hour:02d}:{dt.minute:02d}'
+        if not with_date:
+            return clock
+        date = f'{_MONTH_ABBR[dt.month - 1]} {dt.day:02d}'
+        if dt.year != first.year or dt.year != last.year:
+            date += f' {dt.year}'
+        return f'{date} {clock}'
+
+    same_day = first.date() == last.date()
+    return f'{stamp(first)} → {stamp(last, not same_day)} ({duration})'
 
 
 def build_tab_rows(tab, ctx=None):
@@ -241,14 +304,6 @@ def build_tab_rows(tab, ctx=None):
                  '  ·  Battery ' + _fmt(c.get('battery_wh'), '45') +
                  ' Wh → ~' + _fmt(c.get('battery_hours'), '8.3') +
                  ' h  ·  Cron: ' + _fmt(c.get('cron_status'), 'STOPPED')))
-        add(_row('overview.sparkline', 'Trend',
-                 'temp  ' + _fmt(c.get('temp_spark'), '▁▂▃▅▇█▇▆▅▃▂') +
-                 '     watt  ' + _fmt(c.get('watt_spark'), '▂▃▅▆█▇▆▅▃▂▁')))
-        add(_row('overview.verdict', 'FINAL VERDICT',
-                 'VERDICT: ' + _fmt(c.get('verdict'), 'No Cooler Needed') +
-                 '  ·  max ' + _fmt(c.get('max'), '—') + ' °C  ·  ' +
-                 _fmt(c.get('active_throttles'), '0') + ' throttles  ·  ' +
-                 _fmt(c.get('spike_count'), '0') + ' spikes', 'section'))
         add(_row('overview.span', 'Log span',
                  'Log span: ' + _fmt(c.get('span'), '—') +
                  '  ·  Samples: ' + _fmt(c.get('samples'), '0')))
@@ -753,7 +808,6 @@ def build_context(config=None, recorder=None, live=None):
             ctx['raw_lines'] = []
         if records:
             temps = [r['soc_temp'] for r in records]
-            ctx['temp_spark'] = _sparkline(temps)
             stats = analyze.calculate_stats(temps) or {}
             ctx.update({
                 'samples': stats.get('count', 0),
@@ -796,7 +850,8 @@ def build_context(config=None, recorder=None, live=None):
                 analyze.bucket_temperatures(temps))
             ctx['verdict'] = verdict['decision']
             ctx['reasons'] = verdict['reasons']
-            ctx['span'] = f"{records[0]['timestamp']} → {records[-1]['timestamp']}"
+            ctx['span'] = _format_log_span(
+                records[0].get('timestamp'), records[-1].get('timestamp'))
 
         power_path = os.environ.get('PISTATS_POWER_LOG') or DEFAULT_POWER_LOG
         if live is None:
@@ -833,7 +888,6 @@ def build_context(config=None, recorder=None, live=None):
         if precords:
             ctx['energy_full'] = f"{analyze.energy_wh(precords):.2f}"
             wall_w = [r['wall_w'] for r in precords]
-            ctx['watt_spark'] = _sparkline(wall_w)
             wstats = analyze.calculate_stats(wall_w)
             estimate = analyze.battery_estimate(
                 cfg.get('battery_wh', 45.0), wstats['avg'], wstats['p95'])

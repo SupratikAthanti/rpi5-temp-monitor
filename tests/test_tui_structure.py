@@ -6,7 +6,9 @@ when ``textual`` is absent (guard the textual import). Nothing here starts a TUI
 
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -76,8 +78,27 @@ class TestTabContent(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, text)
 
-    def test_overview_has_compact_verdict(self):
-        self.assertIn('verdict', blob(tui.build_tab_rows('Overview')))
+    def test_overview_has_no_verdict_or_trend(self):
+        ctx = {'verdict': 'Active Cooler Strongly Recommended',
+               'temp_spark': '▁▂▃▇█', 'watt_spark': '▂▃▆█▇'}
+        rows = tui.build_tab_rows('Overview', ctx)
+        ids = {row['id'] for row in rows}
+        self.assertNotIn('overview.verdict', ids)
+        self.assertNotIn('overview.sparkline', ids)
+        text = blob(rows)
+        for token in ('verdict', 'final verdict', 'trend'):
+            with self.subTest(token=token):
+                self.assertNotIn(token, text)
+        # The verdict still belongs to the Performance tab.
+        self.assertIn('verdict', blob(tui.build_tab_rows('Performance', ctx)))
+
+    def test_overview_keeps_graphs_energy_status_and_span(self):
+        ids = {row['id'] for row in tui.build_tab_rows('Overview')}
+        for identifier in ('overview.temp_graph', 'overview.power_graph',
+                           'overview.energy', 'overview.status',
+                           'overview.cost', 'overview.span'):
+            with self.subTest(identifier=identifier):
+                self.assertIn(identifier, ids)
 
     def test_config_has_one_row_per_live_key(self):
         rows = tui.build_tab_rows('Config')
@@ -152,6 +173,67 @@ class TestAutoScrollSelection(unittest.TestCase):
         self.assertFalse(out['editing'])
         self.assertEqual(out['buffer'], '')
         self.assertEqual(out['tab'], 'Config')
+
+
+class TestLogSpan(unittest.TestCase):
+    """The Overview log span is friendly text, not raw ISO timestamps."""
+
+    def test_same_day_span_is_compact_with_duration(self):
+        self.assertEqual(
+            tui._format_log_span('2026-11-22T01:45:07Z',
+                                 '2026-11-22T02:46:40Z'),
+            'Nov 22 01:45 → 02:46 (1h 01m)')
+
+    def test_cross_day_span_shows_both_dates(self):
+        self.assertEqual(
+            tui._format_log_span('2026-11-22T23:45:07Z',
+                                 '2026-11-23T00:46:40Z'),
+            'Nov 22 23:45 → Nov 23 00:46 (1h 01m)')
+
+    def test_cross_year_span_shows_years(self):
+        self.assertEqual(
+            tui._format_log_span('2025-12-31T23:30:00Z',
+                                 '2026-01-01T00:15:00Z'),
+            'Dec 31 2025 23:30 → Jan 01 2026 00:15 (45m)')
+
+    def test_short_and_multi_day_durations(self):
+        self.assertEqual(
+            tui._format_log_span('2026-11-22T01:45:00Z',
+                                 '2026-11-22T01:45:30Z'),
+            'Nov 22 01:45 → 01:45 (30s)')
+        self.assertEqual(
+            tui._format_log_span('2026-11-21T10:00:00Z',
+                                 '2026-11-25T13:05:00Z'),
+            'Nov 21 10:00 → Nov 25 13:05 (4d 03h 05m)')
+
+    def test_missing_or_malformed_timestamps_fall_back(self):
+        for start, end in ((None, '2026-11-22T01:45:07Z'),
+                           ('', ''), ('not-a-date', '2026-11-22T01:45:07Z')):
+            with self.subTest(start=start, end=end):
+                self.assertEqual(tui._format_log_span(start, end), '—')
+
+    def test_build_context_and_overview_row_use_friendly_span(self):
+        log_text = (
+            'timestamp,soc_temp_c,pmic_temp_c,load_1m,arm_freq_mhz,'
+            'throttled_hex,top_proc,top_cpu_pct\n'
+            '2026-11-22T23:45:07Z,60.0,50.0,0.50,2400,0x0,opencode,50.0\n'
+            '2026-11-23T00:46:40Z,61.0,51.0,0.50,2400,0x0,opencode,50.0\n'
+        )
+        with tempfile.TemporaryDirectory() as td:
+            log = os.path.join(td, 'temp_log.csv')
+            with open(log, 'w') as f:
+                f.write(log_text)
+            env = {'PISTATS_POWER_LOG': os.path.join(td, 'missing_power.csv')}
+            with mock.patch.object(tui, '_first_log', return_value=log), \
+                    mock.patch.object(tui, '_config', None), \
+                    mock.patch.dict(os.environ, env):
+                ctx = tui.build_context(
+                    {}, live={'rails': {}, 'pmic_w': None, 'wall_w': None})
+        expected = 'Nov 22 23:45 → Nov 23 00:46 (1h 01m)'
+        self.assertEqual(ctx['span'], expected)
+        self.assertNotIn('T23:45:07Z', ctx['span'])
+        rows = {row['id']: row for row in tui.build_tab_rows('Overview', ctx)}
+        self.assertIn(expected, rows['overview.span']['text'])
 
 
 if __name__ == '__main__':

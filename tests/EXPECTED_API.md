@@ -203,7 +203,8 @@ def cancel_edit(state: dict) -> dict: ...
     processes, spikes and final verdict.
   * `Battery` rows contain sections for live power (PMIC + wall), rail breakdown,
     energy, cost and battery runtime.
-  * `Overview` contains a compact verdict; `Config` contains one row per live key.
+  * `Overview` has no verdict/trend row; its log span is human-readable. `Config`
+    contains one row per live key.
   * Unknown tab → `[]` or `ValueError` (choose one; tests only use known tabs).
 * `move_selection(rows, index, scroll, viewport_height, direction)`:
   * `direction` ∈ `up|down|home|end|page_up|page_down`.

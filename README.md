@@ -76,7 +76,7 @@ paths given to `view` are still interpreted relative to your current directory.
 The dashboard has exactly five tabs, always in this order:
 
 1. **Overview** — live temperature graph, power graph and session energy/cost,
-   followed by the compact verdict and log summary.
+   followed by status details and a human-readable log span with duration.
 2. **Temperature** — min / average (± std dev) / median / p95 / max SoC temp,
    PMIC temperature, CPU load, ARM frequency, temperature distribution and ARM
    frequency distribution (all in one tab).

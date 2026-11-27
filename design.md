@@ -106,7 +106,7 @@ Checklist against the README's "Example Report Output" and feature list.
 | Throttling state (`vcgencmd get_throttled` decoded flags) | **Performance** |
 | Top processes (samples, %) | **Performance** |
 | Spike attribution (5 °C+ jumps, culprit, peak, delta) | **Performance** |
-| Final verdict + all reasons | **Performance** (compact verdict on **Overview**) |
+| Final verdict + all reasons | **Performance** |
 | Cooler recommendation logic (No / Passive / Active) | **Performance** |
 | NEW: watts, per-rail W, energy Wh, cost, battery runtime | **Battery** |
 | NEW: refresh / sample / log intervals, mode, rate, battery, wall factor | **Config** |
@@ -137,10 +137,7 @@ Old workflows preserved as commands:
 ║                                                                                ║
 ║   Cost today $0.011  │  Battery 45 Wh → ~8.3 h  │  Cron: RUNNING               ║
 ║                                                                                ║
-║   temp  ▁▂▃▅▇█▇▆▅▃▂▁▂▃▄▅▆▇█        watt  ▂▃▅▆█▇▆▅▃▂▁▂▃▅▆▇█▇▆                   ║
-║                                                                                ║
-║   VERDICT: ACTIVE COOLER  ·  max 86.7 °C  ·  14 throttles  ·  2 spikes         ║
-║   Log span: 7 d 3 h       Samples: 10,080       → → see detail tabs            ║
+║   Log span: Nov 21 14:32 → Nov 28 17:45 (7d 03h 13m)   Samples: 10,080         ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
 ║ pistats › _     ? commands · ← → tabs · ↑ ↓ rows · Enter detail                ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
