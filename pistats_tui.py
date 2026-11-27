@@ -1159,8 +1159,7 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
         else:
             content = _clip(prefix + text, text_max)
         if pos == state['index']:
-            reverse = 1 if _curses_A_REVERSE is None else _curses_A_REVERSE
-            _lined(y, content, reverse)
+            _lined(y, content, _selected_style())
         elif avail > 1:
             _lined(y, content, _style('label'))
             value = content[len(prefix):]
@@ -1208,8 +1207,7 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
             else:
                 content = _clip(prefix + text, text_max)
             if offset == sub_index:
-                reverse = 1 if _curses_A_REVERSE is None else _curses_A_REVERSE
-                _lined(y, content, reverse)
+                _lined(y, content, _selected_style())
             else:
                 _lined(y, content, _style('label'))
     elif tab_name == 'Overview' and _dashboard is not None:
@@ -1291,9 +1289,11 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
         view = build_palette_view(filtered, state.get('cmd_index', 0))
         base = max(4, height - 6)
         _lined(base, ' COMMANDS (Esc to close):', _style('header', bold=True))
+        active_line = view['index'] - view['start']
         for i, line in enumerate(view['lines']):
             if base + 1 + i < height - 1:
-                _lined(base + 1 + i, line, _style('value'))
+                attr = _selected_style() if i == active_line else _style('value')
+                _lined(base + 1 + i, line, attr)
 
     detail = state.get('detail')
     if isinstance(detail, dict):
@@ -1357,10 +1357,8 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
 
 try:
     import curses as _curses
-    _curses_A_REVERSE = _curses.A_REVERSE
 except Exception:  # pragma: no cover
     _curses = None
-    _curses_A_REVERSE = None
 
 
 # --- colour theme ---------------------------------------------------------
@@ -1368,16 +1366,18 @@ except Exception:  # pragma: no cover
 # built at startup.  On monochrome terminals (or in tests) every role simply
 # resolves to attribute 0 and the old plain rendering is preserved.
 _THEME_COLORS = (
-    ('frame', 'COLOR_BLUE'),
-    ('tab', 'COLOR_CYAN'),
+    # Neutral/white default profile; green is reserved for the selection accent.
+    ('frame', 'COLOR_WHITE'),
+    ('tab', 'COLOR_WHITE'),
     ('tab_active', 'COLOR_WHITE'),
-    ('header', 'COLOR_CYAN'),
-    ('label', 'COLOR_CYAN'),
+    ('header', 'COLOR_WHITE'),
+    ('label', 'COLOR_WHITE'),
     ('value', 'COLOR_WHITE'),
-    ('good', 'COLOR_GREEN'),
+    ('good', 'COLOR_WHITE'),
     ('warn', 'COLOR_YELLOW'),
     ('critical', 'COLOR_RED'),
     ('bar', 'COLOR_YELLOW'),
+    ('selected', 'COLOR_GREEN'),
 )
 _COLOR_ATTRS = {}
 
@@ -1408,6 +1408,19 @@ def _style(name, bold=False):
     if bold and _curses is not None:
         attr |= getattr(_curses, 'A_BOLD', 0)
     return attr
+
+
+def _selected_style():
+    """Attribute for the selected row/command: the green accent pair.
+
+    Reverse video is mixed in when curses offers it, but the accent colour
+    itself always comes from the ``selected`` (green) pair.  With no colour
+    support every role still resolves to plain attribute 0.
+    """
+    attr = _COLOR_ATTRS.get('selected', 0)
+    if not attr or _curses is None:
+        return attr
+    return attr | getattr(_curses, 'A_REVERSE', 0)
 
 
 def _value_style(row):

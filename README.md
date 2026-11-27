@@ -95,8 +95,9 @@ edit, closes the Sampling sub-view or the command palette — at the main screen
 (with nothing open) it exits PiStats. `Home` / `End` jump to the first / last
 row, `PgUp` / `PgDn` jump a page.
 
-The dashboard uses a cyan/blue/yellow colour theme (with red for critical
-verdicts). Monochrome terminals automatically fall back to plain text.
+The dashboard uses a white/neutral colour theme with yellow for warnings and
+red for critical verdicts; the selected row or command is highlighted in green.
+Monochrome terminals automatically fall back to plain text.
 
 ---
 
