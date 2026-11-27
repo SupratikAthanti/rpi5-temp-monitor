@@ -1,6 +1,6 @@
 """TUI structure and navigation tests — pure logic, NO textual required.
 
-The implementation must keep these pure helpers in ``piscope_tui`` importable even
+The implementation must keep these pure helpers in ``pistats_tui`` importable even
 when ``textual`` is absent (guard the textual import). Nothing here starts a TUI.
 """
 
@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import piscope_tui as tui  # noqa: E402
+import pistats_tui as tui  # noqa: E402
 
 
 def make_rows(n, sections=()):
@@ -82,8 +82,8 @@ class TestTabContent(unittest.TestCase):
     def test_config_has_one_row_per_live_key(self):
         rows = tui.build_tab_rows('Config')
         text = blob(rows)
-        import piscope_config
-        for key in piscope_config.LIVE_KEYS:
+        import pistats_config
+        for key in pistats_config.LIVE_KEYS:
             with self.subTest(key=key):
                 self.assertIn(key, text)
 

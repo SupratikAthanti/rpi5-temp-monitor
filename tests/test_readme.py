@@ -1,10 +1,10 @@
-"""README.md must document the PiScope product (design.md §13).
+"""README.md must document the PiStats product (design.md §13).
 
 The repository README still describes "ThermalScope" and numbered shell
 workflows.  design.md §13 requires a rewrite covering the new name, the
-one-command ``piscope`` workflow, the five tabs, the ``?`` command palette,
-configuration, modes, and power/cost/battery.  These tests read README.md from
-disk and assert all of those are actually documented.
+one-command ``python3 pistats.py`` workflow, the five tabs, the ``?`` command
+palette, configuration, modes, and power/cost/battery.  These tests read
+README.md from disk and assert all of those are actually documented.
 """
 
 import os
@@ -32,18 +32,19 @@ class ReadmeTest(unittest.TestCase):
     def test_readme_exists(self):
         self.assertTrue(os.path.exists(README))
 
-    def test_title_uses_new_name_piscope(self):
+    def test_title_uses_new_name_pistats(self):
         heading = self._first_heading().lower()
-        self.assertIn('piscope', heading,
-                      'README title must use the new name PiScope, got: %r' %
+        self.assertIn('pistats', heading,
+                      'README title must use the new name PiStats, got: %r' %
                       self._first_heading())
 
     def test_one_command_workflow_documented(self):
-        # Accept a bare `piscope` line, optionally with a shell prompt / comment.
-        bare = re.compile(r'^\$?\s*piscope\s*(#.*)?$', re.IGNORECASE)
+        # The one-command workflow is `python3 pistats.py`, optionally with a
+        # shell prompt / comment.
+        bare = re.compile(r'^\$?\s*python3\s+pistats\.py\s*(#.*)?$', re.IGNORECASE)
         self.assertTrue(
             any(bare.match(l.strip()) for l in self.text.splitlines()),
-            'README must show a bare `piscope` command (no args/subcommand)')
+            'README must show `python3 pistats.py` (no args/subcommand)')
         self.assertTrue(
             any(p in self.lower for p in (
                 'one command', 'no flags', 'no arguments', 'single command',
@@ -79,7 +80,7 @@ class ReadmeTest(unittest.TestCase):
 
     def test_config_path_documented(self):
         self.assertIn('config.json', self.lower)
-        self.assertIn('piscope', self.lower)
+        self.assertIn('pistats', self.lower)
 
     def test_modes_documented(self):
         missing = [m for m in ('temp', 'power', 'both') if m not in self.lower]

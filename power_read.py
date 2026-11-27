@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PMIC rail power reading for the PiScope project.
+"""PMIC rail power reading for the PiStats project.
 
 Parses the raw output of ``vcgencmd pmic_read_adc``.  A rail only contributes
 power when it has at least one amps reading *and* at least one volts reading:
@@ -106,8 +106,8 @@ def read_power(env=None):
 
     wall_factor = 1.0
     try:
-        import piscope_config
-        wall_factor = float(piscope_config.load_config().get("wall_factor", 1.0))
+        import pistats_config
+        wall_factor = float(pistats_config.load_config().get("wall_factor", 1.0))
     except Exception:
         wall_factor = 1.0
 

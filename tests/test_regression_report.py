@@ -1,7 +1,7 @@
 """Regression tests for the 2026-11-21 QA audit of analyze.py.
 
 Bugs forced: 3 (``/range`` must actually filter time-series records),
-6 (report title must say PiScope).  All fixtures are written to temp dirs; no
+6 (report title must say PiStats).  All fixtures are written to temp dirs; no
 repo data, home config or hardware is touched.  Required interfaces are in
 ``EXPECTED_API.md`` section 14.
 """
@@ -157,16 +157,16 @@ class TestBuildReportRangeIsExecuted(unittest.TestCase):
 
 
 class TestReportTitle(unittest.TestCase):
-    """BUG 6: the report must identify itself as PiScope."""
+    """BUG 6: the report must identify itself as PiStats."""
 
-    def test_title_says_piscope_and_keeps_legacy_heading(self):
+    def test_title_says_pistats_and_keeps_legacy_heading(self):
         with tempfile.TemporaryDirectory() as scratch:
             log = os.path.join(scratch, 'temp_log.csv')
             write_temp_log(log, daily_timestamps(1, 2))
             title = next(line for line in
                          analyze.build_report(log, config=CONFIG).splitlines()
                          if 'REPORT' in line)
-            self.assertIn('PiScope', title)
+            self.assertIn('PiStats', title)
             self.assertIn('TEMPERATURE & COOLER DECISION REPORT', title)
 
 

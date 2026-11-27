@@ -1,8 +1,9 @@
-"""Command-line entry point for PiScope.
+"""Command-line entry point for PiStats.
 
-``piscope`` with no arguments opens the dashboard; ``piscope view`` prints the
-same text report as ``python3 analyze.py``.  ``textual`` is never imported
-here so the module works with a stock Python 3.13 stdlib installation.
+``python3 pistats.py`` with no arguments opens the dashboard;
+``python3 pistats.py view`` prints the same text report as ``python3 analyze.py``.
+``textual`` is never imported here so the module works with a stock Python 3.13
+stdlib installation.
 """
 
 import argparse
@@ -14,8 +15,8 @@ import analyze
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog='piscope',
-        description='PiScope — live CLI dashboard and temperature/power reports. '
+        prog='python3 pistats.py',
+        description='PiStats — live CLI dashboard and temperature/power reports. '
                     'Run with no arguments to open the TUI.')
     sub = parser.add_subparsers(dest='command')
 
@@ -37,7 +38,7 @@ def run_view(args):
     log = args.log or os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    'temp_log.csv')
     if not os.path.exists(log):
-        print(f'piscope: log file not found: {log}', file=sys.stderr)
+        print(f'pistats: log file not found: {log}', file=sys.stderr)
         return 1
     power_log = getattr(args, 'power_log', None)
     if power_log is None:
@@ -47,8 +48,8 @@ def run_view(args):
             power_log = adjacent
     config = None
     try:
-        import piscope_config
-        config = piscope_config.load_config()
+        import pistats_config
+        config = pistats_config.load_config()
     except Exception:
         config = None
     try:
@@ -56,7 +57,7 @@ def run_view(args):
             log, power_log_file=power_log, config=config,
             range_spec=getattr(args, 'range_spec', None))
     except OSError as exc:
-        print(f'piscope: could not read log: {exc}', file=sys.stderr)
+        print(f'pistats: could not read log: {exc}', file=sys.stderr)
         return 1
     sys.stdout.write(report)
     return 0
@@ -64,7 +65,7 @@ def run_view(args):
 
 def launch_tui(args):
     """Launch the full-screen dashboard (mocked by tests)."""
-    from piscope_tui import run_tui
+    from pistats_tui import run_tui
     return run_tui()
 
 

@@ -1,6 +1,6 @@
 """Regression tests for §14.5 literal control-character key resolution.
 
-The string branch of ``piscope_tui.resolve_key_action`` currently does
+The string branch of ``pistats_tui.resolve_key_action`` currently does
 ``key.strip().lower()`` *before* testing the token.  That turns the literal
 control characters ``'\\t'``, ``'\\n'`` and ``'\\r'`` into the empty string, so
 the branches that try to match those literals are dead code and the helper
@@ -20,7 +20,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import piscope_tui as tui  # noqa: E402
+import pistats_tui as tui  # noqa: E402
 
 
 # Minimal curses stand-in: enough key codes to drive KEY_BINDINGS without

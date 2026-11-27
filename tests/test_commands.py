@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import piscope_commands as cmds  # noqa: E402
+import pistats_commands as cmds  # noqa: E402
 
 
 class TestCommandCatalog(unittest.TestCase):

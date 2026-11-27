@@ -6,7 +6,7 @@
 
 set -uo pipefail
 
-# PiScope: extract --mode MODE / --mode=MODE from anywhere in the arguments
+# PiStats: extract --mode MODE / --mode=MODE from anywhere in the arguments
 # and pass it through to collect.sh.  Remaining args keep their old meaning.
 MODE="both"
 _MODE_ARGS=()

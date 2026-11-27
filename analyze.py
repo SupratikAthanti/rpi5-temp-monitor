@@ -334,7 +334,7 @@ def determine_verdict(stats, throttle_summary, buckets):
 
 
 # ---------------------------------------------------------------------------
-# PiScope power / energy / battery helpers (additive: legacy API untouched)
+# PiStats power / energy / battery helpers (additive: legacy API untouched)
 # ---------------------------------------------------------------------------
 
 def pmic_to_wall(pmic_w, factor=1.0):
@@ -588,7 +588,7 @@ def build_report(log_file, power_log_file=None, config=None, range_spec=None):
         records = filter_records_by_range(records, range_spec)
     lines = []
     lines.append('=' * 65)
-    lines.append(' PiScope - TEMPERATURE & COOLER DECISION REPORT')
+    lines.append(' PiStats - TEMPERATURE & COOLER DECISION REPORT')
     lines.append('=' * 65)
 
     if not records:
@@ -790,8 +790,8 @@ def main(argv=None):
 
     config = None
     try:
-        import piscope_config
-        config = piscope_config.load_config()
+        import pistats_config
+        config = pistats_config.load_config()
     except Exception:
         config = None
 

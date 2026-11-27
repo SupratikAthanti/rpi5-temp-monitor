@@ -1,4 +1,4 @@
-"""Regression tests for the 2026-11-21 QA audit of the PiScope TUI.
+"""Regression tests for the 2026-11-21 QA audit of the PiStats TUI.
 
 Every test here targets a genuine bug that the original 198 tests missed.  The
 helpers exercised are all *pure* (no curses, no hardware, no real home dir), so
@@ -17,8 +17,8 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import piscope_commands as cmds  # noqa: E402
-import piscope_tui as tui  # noqa: E402
+import pistats_commands as cmds  # noqa: E402
+import pistats_tui as tui  # noqa: E402
 
 
 def make_rows(count=20, sections=(0, 5, 10, 15)):

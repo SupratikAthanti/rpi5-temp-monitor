@@ -1,6 +1,6 @@
 """setup-cron.sh (design.md §13) installs/removes a cron entry SAFELY.
 
-The script must be the counterpart to stop.sh and must manage only PiScope's
+The script must be the counterpart to stop.sh and must manage only PiStats's
 collector line.  To guarantee we never touch the real crontab, every test puts a
 fake ``crontab`` executable first on PATH and also points the common env
 overrides (CRON_BIN / CRONTAB / CRON_CMD) at it.  The fake keeps its "crontab"

@@ -6,7 +6,7 @@
 # Usage: ./collect.sh [--mode temp|power|both] [--skip-if-locked] [--dry-run] [LOG_FILE]
 #
 # Optional environment hooks (used by the test suite, no real hardware touched):
-#   PISCOPE_POWER_LOG   power CSV destination set by the TUI (takes precedence)
+#   PISTATS_POWER_LOG   power CSV destination set by the TUI (takes precedence)
 #   POWER_LOG           legacy power CSV destination (default: <logdir>/power_log.csv)
 #   COLLECTOR_PID_FILE  pid lock file (default: /tmp/thermal-scope-collector.pid)
 #   FAKE_SOC_TEMP       deterministic SoC temperature
@@ -57,8 +57,8 @@ WANT_POWER=false
 [[ "$MODE" == "temp" || "$MODE" == "both" ]] && WANT_TEMP=true
 [[ "$MODE" == "power" || "$MODE" == "both" ]] && WANT_POWER=true
 
-# The TUI exports PISCOPE_POWER_LOG; keep the legacy POWER_LOG override working.
-POWER_LOG="${PISCOPE_POWER_LOG:-${POWER_LOG:-$(dirname "$LOG_FILE")/power_log.csv}}"
+# The TUI exports PISTATS_POWER_LOG; keep the legacy POWER_LOG override working.
+POWER_LOG="${PISTATS_POWER_LOG:-${POWER_LOG:-$(dirname "$LOG_FILE")/power_log.csv}}"
 
 # File locking to prevent concurrent runs (PID-based)
 PID_FILE="${COLLECTOR_PID_FILE:-/tmp/thermal-scope-collector.pid}"

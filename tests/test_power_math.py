@@ -1,4 +1,4 @@
-"""Power-domain unit tests for the PiScope spec.
+"""Power-domain unit tests for the PiStats spec.
 
 Covers:
   * vcgencmd pmic_read_adc parsing (rail A*V, exclusions, malformed input, duplicates)

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# PiScope cron installer -- counterpart to ./stop.sh (design.md §13).
+# PiStats cron installer -- counterpart to ./stop.sh (design.md §13).
 #
 # Usage: setup-cron.sh start|stop|status
 #
-# Only PiScope's collector line is ever added or removed; unrelated crontab
+# Only PiStats's collector line is ever added or removed; unrelated crontab
 # entries are preserved verbatim.  The crontab executable is resolved from
 # CRON_BIN / CRONTAB / CRON_CMD (in that order) and falls back to `crontab` on
 # PATH, so tests can inject a fake via PATH without ever touching the real
@@ -25,23 +25,23 @@ case "$ACTION" in
     start)
         current="$(current_crontab)"
         if printf '%s\n' "$current" | grep -q -- "$COLLECT_MARK"; then
-            printf 'PiScope cron already installed (no changes).\n'
+            printf 'PiStats cron already installed (no changes).\n'
         else
             printf '%s\n%s\n' "$current" "$CRON_LINE" | "$CRON_BIN" -
-            printf 'PiScope cron installed: %s\n' "$CRON_LINE"
+            printf 'PiStats cron installed: %s\n' "$CRON_LINE"
         fi
         ;;
     stop)
         current="$(current_crontab)"
         printf '%s\n' "$current" | grep -v -- "$COLLECT_MARK" | "$CRON_BIN" -
-        printf 'PiScope cron entry removed.\n'
+        printf 'PiStats cron entry removed.\n'
         ;;
     status)
         current="$(current_crontab)"
         if printf '%s\n' "$current" | grep -q -- "$COLLECT_MARK"; then
-            printf 'PiScope cron: RUNNING (background collector installed)\n'
+            printf 'PiStats cron: RUNNING (background collector installed)\n'
         else
-            printf 'PiScope cron: STOPPED (no background collector)\n'
+            printf 'PiStats cron: STOPPED (no background collector)\n'
         fi
         ;;
     *)

@@ -1,4 +1,4 @@
-"""Sampling sub-view and dual sampling-interval tests for PiScope (stdlib only).
+"""Sampling sub-view and dual sampling-interval tests for PiStats (stdlib only).
 
 The Config tab exposes one SAMPLING row which opens a small sub-view with two
 options.  ``power_sample_interval_s`` drives the Battery context cache while
@@ -19,8 +19,8 @@ except ImportError:  # pragma: no cover
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import piscope_config as cfgmod  # noqa: E402
-import piscope_tui as tui  # noqa: E402
+import pistats_config as cfgmod  # noqa: E402
+import pistats_tui as tui  # noqa: E402
 
 
 class TestSamplingRows(unittest.TestCase):
@@ -119,7 +119,7 @@ class TestPowerSamplingConfig(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.path = os.path.join(self.tmp.name, 'piscope', 'config.json')
+        self.path = os.path.join(self.tmp.name, 'pistats', 'config.json')
         self._old = os.environ.get(cfgmod.CONFIG_PATH_ENV)
         os.environ[cfgmod.CONFIG_PATH_ENV] = self.path
 
@@ -186,7 +186,7 @@ class TestLoopBehavior(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.path = os.path.join(self.tmp.name, 'piscope', 'config.json')
+        self.path = os.path.join(self.tmp.name, 'pistats', 'config.json')
         self._old = os.environ.get(cfgmod.CONFIG_PATH_ENV)
         os.environ[cfgmod.CONFIG_PATH_ENV] = self.path
 

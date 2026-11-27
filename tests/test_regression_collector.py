@@ -1,6 +1,6 @@
 """Regression test for the 2026-11-21 QA audit: persistence env-var mismatch.
 
-``piscope_tui._persist_sample`` exports ``PISCOPE_POWER_LOG`` to the collector,
+``pistats_tui._persist_sample`` exports ``PISTATS_POWER_LOG`` to the collector,
 but ``collect.sh`` historically only read ``POWER_LOG``.  These tests run the
 real collector script with every path overridden into a temp dir (and with a
 private PID file), so no real hardware, home directory or repo data is touched.
@@ -31,7 +31,7 @@ class TestPowerLogEnvAlias(unittest.TestCase):
         self.env = dict(os.environ)
         # Explicitly remove both overrides: the test adds exactly one at a time.
         self.env.pop('POWER_LOG', None)
-        self.env.pop('PISCOPE_POWER_LOG', None)
+        self.env.pop('PISTATS_POWER_LOG', None)
         self.env.update({
             'COLLECTOR_PID_FILE': os.path.join(self.tmp.name, 'collector.pid'),
             'FAKE_PMIC_ADC': PMIC_TEXT,
@@ -50,15 +50,15 @@ class TestPowerLogEnvAlias(unittest.TestCase):
             cwd=self.tmp.name, env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
 
-    def test_piscope_power_log_env_is_honoured(self):
-        target = os.path.join(self.tmp.name, 'piscope_power.csv')
+    def test_pistats_power_log_env_is_honoured(self):
+        target = os.path.join(self.tmp.name, 'pistats_power.csv')
         env = dict(self.env)
-        env['PISCOPE_POWER_LOG'] = target
+        env['PISTATS_POWER_LOG'] = target
 
         result = self.run_collector(env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(os.path.exists(target),
-                        'collector ignored PISCOPE_POWER_LOG set by the TUI')
+                        'collector ignored PISTATS_POWER_LOG set by the TUI')
         with open(target, newline='') as f:
             rows = list(csv.reader(f))
         self.assertEqual(rows[0], ['timestamp', 'pmic_w', 'wall_w'])

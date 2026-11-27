@@ -1,4 +1,4 @@
-"""Configuration tests for PiScope.
+"""Configuration tests for PiStats.
 
 Covers defaults, JSON load/save at a temp path override (never real home),
 validation/clamping, the live-apply key set, and typed `/config set` value parsing.
@@ -12,7 +12,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import piscope_config as cfgmod  # noqa: E402
+import pistats_config as cfgmod  # noqa: E402
 
 
 class TestConfigDefaults(unittest.TestCase):
@@ -39,7 +39,7 @@ class TestConfigDefaults(unittest.TestCase):
 class TestConfigPath(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.path = os.path.join(self.tmp.name, 'piscope', 'config.json')
+        self.path = os.path.join(self.tmp.name, 'pistats', 'config.json')
         self._old = os.environ.get(cfgmod.CONFIG_PATH_ENV)
         os.environ[cfgmod.CONFIG_PATH_ENV] = self.path
 
@@ -91,7 +91,7 @@ class TestConfigPath(unittest.TestCase):
     def test_no_real_home_write(self):
         # Regression guard (audit item 10): the old version of this test merely
         # re-checked config_path(), so a save_config() that ignored the env
-        # override and wrote to ~/.config/piscope/config.json went unnoticed.
+        # override and wrote to ~/.config/pistats/config.json went unnoticed.
         # Point HOME at a temp dir FIRST so a regression can never touch the
         # real home, then assert that nothing was written there.
         old_home = os.environ.get('HOME')
@@ -103,10 +103,10 @@ class TestConfigPath(unittest.TestCase):
                 cfgmod.save_config(dict(cfgmod.DEFAULT_CONFIG))
                 self.assertEqual(cfgmod.config_path(), self.path)
                 self.assertTrue(os.path.exists(self.path),
-                                'config was not written to PISCOPE_CONFIG_PATH')
+                                'config was not written to PISTATS_CONFIG_PATH')
                 self.assertFalse(
                     os.path.exists(legacy),
-                    'save_config wrote to HOME instead of PISCOPE_CONFIG_PATH')
+                    'save_config wrote to HOME instead of PISTATS_CONFIG_PATH')
                 self.assertFalse(os.path.exists(
                     os.path.join(fake_home, '.config')),
                     'save_config created a ~/.config tree despite the override')

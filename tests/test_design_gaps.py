@@ -2,7 +2,7 @@
 
 Most of design.md is already covered by the existing suite.  These two required
 behaviours were not: (a) the configured wall factor actually reaching
-``power_read.read_power`` via the config path override, and (b) ``piscope view
+``power_read.read_power`` via the config path override, and (b) ``pistats.py view
 --range`` routing the range spec into ``analyze.build_report``.  They are quick,
 fully isolated tests that lock in those contracts.
 """
@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import piscope_config as cfgmod  # noqa: E402
+import pistats_config as cfgmod  # noqa: E402
 import power_read  # noqa: E402
 
 ADC = (
@@ -53,7 +53,7 @@ class TestConfiguredWallFactor(unittest.TestCase):
 
 class TestViewRangeRouting(unittest.TestCase):
     def test_view_forwards_range_spec_to_build_report(self):
-        import piscope_cli as cli
+        import pistats_cli as cli
         with tempfile.TemporaryDirectory() as td:
             log = os.path.join(td, 'temp_log.csv')
             with open(log, 'w') as f:

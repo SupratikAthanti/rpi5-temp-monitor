@@ -1,4 +1,4 @@
-"""PiScope TUI: five tabs, command bar and auto-scrolling row selection.
+"""PiStats TUI: five tabs, command bar and auto-scrolling row selection.
 
 The pure helpers at the top of this module (``build_tab_rows``,
 ``move_selection``, ``scroll_to_section``, ...) intentionally have **no**
@@ -22,8 +22,8 @@ except Exception:  # pragma: no cover - depends on the environment
     HAS_TEXTUAL = False
 
 try:
-    import piscope_config as _config
-    import piscope_commands as _commands
+    import pistats_config as _config
+    import pistats_commands as _commands
 except ImportError:  # pragma: no cover - only when run outside the repo
     _config = None
     _commands = None
@@ -607,7 +607,7 @@ def build_detail(row, tab, ctx=None):
     """Build the structured ``Enter`` overlay for a selectable row."""
     row = row or {}
     label = str(row.get('label') or '')
-    title = label or (f'{tab} detail' if tab else 'PiScope detail')
+    title = label or (f'{tab} detail' if tab else 'PiStats detail')
     value = str(row.get('text', ''))
 
     snapshot = None
@@ -711,7 +711,7 @@ def build_context(config=None):
             ctx['reasons'] = verdict['reasons']
             ctx['span'] = f"{records[0]['timestamp']} → {records[-1]['timestamp']}"
 
-        power_path = os.environ.get('PISCOPE_POWER_LOG') or DEFAULT_POWER_LOG
+        power_path = os.environ.get('PISTATS_POWER_LOG') or DEFAULT_POWER_LOG
         precords = analyze.parse_power_log(power_path)
         live = power_read.read_power()
         ctx['rails'] = live['rails']
@@ -720,7 +720,7 @@ def build_context(config=None):
         ctx['wall_factor'] = cfg.get('wall_factor', 1.0)
         ctx['rate'] = cfg.get('rate_per_kwh', 0.15)
         ctx['battery_wh'] = cfg.get('battery_wh', 45.0)
-        ctx['cron_status'] = os.environ.get('PISCOPE_CRON_STATUS', 'STOPPED')
+        ctx['cron_status'] = os.environ.get('PISTATS_CRON_STATUS', 'STOPPED')
         if precords:
             ctx['energy_full'] = f"{analyze.energy_wh(precords):.2f}"
             wall_w = [r['wall_w'] for r in precords]
@@ -756,7 +756,7 @@ def _command_context(state, cfg):
     real process or edits a real crontab.
     """
     cfgmod = _config
-    data_dir = (os.environ.get('PISCOPE_DATA_DIR') or
+    data_dir = (os.environ.get('PISTATS_DATA_DIR') or
                 os.path.dirname(DEFAULT_TEMP_LOG))
 
     def confirm(prompt):
@@ -779,7 +779,7 @@ def _command_context(state, cfg):
 
     def report_fn(**kwargs):
         import analyze
-        power = os.environ.get('PISCOPE_POWER_LOG') or DEFAULT_POWER_LOG
+        power = os.environ.get('PISTATS_POWER_LOG') or DEFAULT_POWER_LOG
         if not os.path.exists(power):
             power = None
         return analyze.build_report(_first_log(), power_log_file=power,
@@ -842,13 +842,13 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
 
     Layout (top to bottom)::
 
-        ╔═ PiScope · TAB ───────────────────────────────────────╗
+        ╔═ PiStats · TAB ───────────────────────────────────────╗
         ║ ◀ Overview │ … │ Config ▶                            ║
         ╟────────────────────────────────────────────────────────╢
         ║ header · … · clock (right-aligned)                     ║
         ║ content rows …                                        ║
         ╟────────────────────────────────────────────────────────╢
-        ╚ piscope › …                 shortcut hint (right)     ╝
+        ╚ pistats › …                 shortcut hint (right)     ╝
 
     Every row uses the exact same right-edge column.  Curses cannot safely
     paint the very last column of a terminal (writing there wraps the cursor),
@@ -906,7 +906,7 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
     # --- row 0: top border, with the active tab as its title ---------------
     tab_index = state['tab_index']
     tab_name = TABS[tab_index] if 0 <= tab_index < len(TABS) else TABS[0]
-    title = _clip(f'╔═ PiScope · {tab_name.upper()} ', width - 2)
+    title = _clip(f'╔═ PiStats · {tab_name.upper()} ', width - 2)
     _put(0, 0, title + '─' * max(0, width - 2 - len(title)) + '╗', width - 1,
          _style('header', bold=True))
 
@@ -947,16 +947,16 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
     live = 'PAUSED' if state.get('paused') else 'LIVE'
     session = state.get('session_time', '')
     lefts = [
-        f'PiScope · {live} · mode={mode} · render {interval}s'
+        f'PiStats · {live} · mode={mode} · render {interval}s'
         + (f' · session {session}' if session else ''),
-        f'PiScope · {live} · mode={mode} · render {interval}s',
-        f'PiScope · {live} · mode={mode}',
-        f'PiScope · {live}',
-        'PiScope',
+        f'PiStats · {live} · mode={mode} · render {interval}s',
+        f'PiStats · {live} · mode={mode}',
+        f'PiStats · {live}',
+        'PiStats',
     ]
     clocks = [time.strftime('%Y-%m-%d %H:%M:%S'),
               time.strftime('%H:%M:%S'), time.strftime('%H:%M')]
-    header = _clip('PiScope · ' + clocks[-1], text_max)
+    header = _clip('PiStats · ' + clocks[-1], text_max)
     for clock in clocks:
         for left in lefts:
             if len(left) + 2 + len(clock) <= text_max:
@@ -1078,10 +1078,10 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
             caret = len(edit_buffer)
         # Design §9 shows the caret inline, e.g. "[ 2_ ]" while editing.
         shown = edit_buffer[:caret] + '_' + edit_buffer[caret:]
-        left = 'piscope › edit [' + shown + ']'
+        left = 'pistats › edit [' + shown + ']'
         hints = ['Enter save · Esc cancel']
     else:
-        left = 'piscope › ' + state.get('buffer', '')
+        left = 'pistats › ' + state.get('buffer', '')
         hints = [
             '? commands · ← → tabs · ↑ ↓ rows · Enter detail',
             '? commands · ← → tabs · ↑ ↓ rows',
@@ -1194,7 +1194,7 @@ def _persist_sample(cfg):
         argv += ['--mode', str(mode)]
     argv.append(_first_log())
     env = dict(os.environ)
-    env.setdefault('PISCOPE_POWER_LOG', DEFAULT_POWER_LOG)
+    env.setdefault('PISTATS_POWER_LOG', DEFAULT_POWER_LOG)
     try:
         subprocess.Popen(
             argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1429,7 +1429,7 @@ def _tui_loop(stdscr, cfg):
 def run_tui(config=None):
     """Launch the full-screen curses dashboard.  Returns an exit code."""
     if _curses is None:
-        print('PiScope TUI requires the stdlib curses module.', file=sys.stderr)
+        print('PiStats TUI requires the stdlib curses module.', file=sys.stderr)
         return 1
     cfg = dict(config or {})
     if _config:
@@ -1442,7 +1442,7 @@ def run_tui(config=None):
     except KeyboardInterrupt:
         return 0
     except Exception as exc:  # pragma: no cover - defensive
-        print(f'PiScope TUI error: {exc}', file=sys.stderr)
+        print(f'PiStats TUI error: {exc}', file=sys.stderr)
         return 1
     return 0
 

@@ -1,4 +1,4 @@
-"""Regression tests: new PiScope code must not remove/break the old report API.
+"""Regression tests: new PiStats code must not remove/break the old report API.
 
 The existing tests already cover most pure functions; this module checks that every
 old exported symbol still exists and that the generated report still carries every

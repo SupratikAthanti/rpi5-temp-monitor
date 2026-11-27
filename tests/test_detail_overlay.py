@@ -6,7 +6,7 @@ design.md §7: "Enter on a spike opens the captured top-process snapshot (CPU %,
 memory %, arguments) from spikes.csv."
 
 The current TUI simply stores ``row['text']`` as its detail overlay.  These tests
-require a pure ``build_detail(row, tab, ctx)`` helper (piscope_tui) that produces
+require a pure ``build_detail(row, tab, ctx)`` helper (pistats_tui) that produces
 a structured overlay with the original sample and raw CSV line, plus parsed
 per-process snapshot entries for spike rows.  Context is injected, so no real
 log files are read.
@@ -20,7 +20,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import piscope_tui as tui  # noqa: E402
+import pistats_tui as tui  # noqa: E402
 
 
 RECORDS = [
@@ -48,7 +48,7 @@ class DetailOverlayTestBase(unittest.TestCase):
     def setUp(self):
         self.build_detail = getattr(tui, 'build_detail', None)
         self.assertIsNotNone(self.build_detail,
-                             'piscope_tui.build_detail(row, tab, ctx) is missing')
+                             'pistats_tui.build_detail(row, tab, ctx) is missing')
 
     @staticmethod
     def row(rows, row_id):

@@ -1,14 +1,14 @@
-"""PiScope configuration: defaults, JSON persistence and validation.
+"""PiStats configuration: defaults, JSON persistence and validation.
 
-All paths are overridable with ``PISCOPE_CONFIG_PATH`` so tests (and the TUI)
+All paths are overridable with ``PISTATS_CONFIG_PATH`` so tests (and the TUI)
 never touch the real home directory.  Only stdlib is used.
 """
 
 import json
 import os
 
-CONFIG_REL_PATH = os.path.join('.config', 'piscope', 'config.json')
-CONFIG_PATH_ENV = 'PISCOPE_CONFIG_PATH'
+CONFIG_REL_PATH = os.path.join('.config', 'pistats', 'config.json')
+CONFIG_PATH_ENV = 'PISTATS_CONFIG_PATH'
 
 DEFAULT_CONFIG = {
     'render_interval_s': 1.0,

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""PiScope launcher — start the app with plain Python, from any directory.
+"""PiStats launcher — used by ``python3 pistats.py``, from any directory.
 
 Usage:
-    python3 start.py                      open the full-screen dashboard
-    python3 start.py view [LOG] [OPTIONS] print the text report
+    python3 pistats.py                      open the full-screen dashboard
+    python3 pistats.py view [LOG] [OPTIONS] print the text report
 
 The launcher resolves its own location with realpath(), so its companion
-modules (piscope_cli, piscope_tui, analyze, ...) are importable no matter what
-the current working directory is.  The executable ``piscope`` file is just a
-thin shim around this module.
+modules (pistats_cli, pistats_tui, analyze, ...) are importable no matter what
+the current working directory is.  The ``pistats.py`` file is the Python entry
+point that delegates here; running it via ``python3 pistats.py`` needs no PATH
+setup and no executable bit.
 """
 
 import os
@@ -21,10 +22,10 @@ def repo_dir():
 
 
 def main(argv=None):
-    """Dispatch into the PiScope CLI and return its exit status."""
+    """Dispatch into the PiStats CLI and return its exit status."""
     sys.path.insert(0, repo_dir())
 
-    from piscope_cli import main as cli_main  # noqa: WPS433  (lazy by design)
+    from pistats_cli import main as cli_main  # noqa: WPS433  (lazy by design)
 
     return cli_main(argv)
 

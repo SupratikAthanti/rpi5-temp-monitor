@@ -1,8 +1,8 @@
-# PiScope — Design: Live CLI Dashboard, Five Tabs & Full Feature Preservation
+# PiStats — Design: Live CLI Dashboard, Five Tabs & Full Feature Preservation
 
 > Status: **design only.** Nothing described below has been implemented.
 > Branch: `RPI-Power-Monitoring`.
-> Proposed new name: **PiScope** (command: `piscope`). Renaming the GitHub repo is a
+> Proposed new name: **PiStats** (command: `python3 pistats.py`). Renaming the GitHub repo is a
 > separate step and has not been done. Alternatives: `wattwatch`, `thermowatt`, `piwatch`.
 
 ---
@@ -12,7 +12,7 @@
 One command opens everything:
 
 ```bash
-piscope
+python3 pistats.py
 ```
 
 No flags, no numbered menus. A full-screen dashboard that **renders every second**, with:
@@ -52,7 +52,7 @@ The 1 Hz samples live in memory for the display; persistent CSV logs stay at a
 ├──────────────────────────────────────────────────────────────┤
 │              active tab content (updates every second)       ║
 ├──────────────────────────────────────────────────────────────┤
-│ piscope › _     ? commands · ← → tabs · ↑ ↓ rows · Enter     ║
+│ pistats › _     ? commands · ← → tabs · ↑ ↓ rows · Enter     ║
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -116,7 +116,7 @@ Old workflows preserved as commands:
 | Old workflow | New command |
 |---|---|
 | `run-test.sh 60` (progress, tmux, custom durations) | `/test 60` (script still works) |
-| `python3 analyze.py ...` anytime | `/report` and `piscope view` |
+| `python3 analyze.py ...` anytime | `/report` and `pistats.py view` |
 | `stop.sh` (remove cron) | `/cron stop` |
 | `reset.sh` (fresh start) | `/reset` |
 | 7-day / custom-range reports | `/range 7d` |
@@ -126,7 +126,7 @@ Old workflows preserved as commands:
 ## 5. Tab 1 — Overview
 
 ```
-╔═ PiScope  ·  OVERVIEW ─────────────────────────────────────────────────────────╗
+╔═ PiStats  ·  OVERVIEW ─────────────────────────────────────────────────────────╗
 ║ ◀ Overview │ Temperature │ Performance │ Battery │ Config ▶                    ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
 ║ Mode: BOTH      Render: 1 s      Session: 00:12:43     2026-11-21 14:32:07     ║
@@ -142,7 +142,7 @@ Old workflows preserved as commands:
 ║   VERDICT: ACTIVE COOLER  ·  max 86.7 °C  ·  14 throttles  ·  2 spikes         ║
 ║   Log span: 7 d 3 h       Samples: 10,080       → → see detail tabs            ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
-║ piscope › _     ? commands · ← → tabs · ↑ ↓ rows · Enter detail                ║
+║ pistats › _     ? commands · ← → tabs · ↑ ↓ rows · Enter detail                ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 ```
 
@@ -156,7 +156,7 @@ Two consecutive frames illustrate that behavior:
 **Frame A — top of the tab:**
 
 ```
-╔═ PiScope  ·  TEMPERATURE ──────────────────────────────────────────────────────╗
+╔═ PiStats  ·  TEMPERATURE ──────────────────────────────────────────────────────╗
 ║  Overview │ ◀ Temperature ▶ │ Performance │ Battery │ Config                   ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
 ║ > SoC TEMPERATURE STATS (°C)          Samples 63 · span 20:08:12Z→21:09:20Z    ║
@@ -170,14 +170,14 @@ Two consecutive frames illustrate that behavior:
 ║   TEMPERATURE DISTRIBUTION                                                     ║
 ║     Under 60°C (Cool)   :   0 ( 0.00%)                                         ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
-║ piscope › _     ? commands · ↑ ↓ rows · Enter detail                           ║
+║ pistats › _     ? commands · ↑ ↓ rows · Enter detail                           ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 ```
 
 **Frame B — after pressing `↓` several times; the view scrolled to follow the highlight:**
 
 ```
-╔═ PiScope  ·  TEMPERATURE ──────────────────────────────────────────────────────╗
+╔═ PiStats  ·  TEMPERATURE ──────────────────────────────────────────────────────╗
 ║  Overview │ ◀ Temperature ▶ │ Performance │ Battery │ Config                   ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
 ║   TEMPERATURE DISTRIBUTION                                                     ║
@@ -191,7 +191,7 @@ Two consecutive frames illustrate that behavior:
 ║     1000 / 750 / 600 MHz  :   0 ( 0.00%)                                       ║
 ║     Other/Unknown         :   0 ( 0.00%)                                       ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
-║ piscope › _     ? commands · ↑ ↓ rows · Enter detail                           ║
+║ pistats › _     ? commands · ↑ ↓ rows · Enter detail                           ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 ```
 
@@ -203,7 +203,7 @@ the raw source line.
 ## 7. Tab 3 — Performance / Throttling / Spikes
 
 ```
-╔═ PiScope  ·  PERFORMANCE ──────────────────────────────────────────────────────╗
+╔═ PiStats  ·  PERFORMANCE ──────────────────────────────────────────────────────╗
 ║  Overview │ Temperature │ ◀ Performance ▶ │ Battery │ Config                   ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
 ║ > PERFORMANCE IMPACT ANALYSIS                                                  ║
@@ -224,7 +224,7 @@ the raw source line.
 ║       - max 86.7 °C (≥ 85 °C); 14 active throttles; 23.81 % above 85 °C        ║
 ║       - frequent spikes: 2 in 63 samples (3.17 %), culprit opencode            ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
-║ piscope › _     ? commands · ↑ ↓ rows · Enter detail                           ║
+║ pistats › _     ? commands · ↑ ↓ rows · Enter detail                           ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 ```
 
@@ -236,7 +236,7 @@ from `spikes.csv`.
 ## 8. Tab 4 — Battery & Cost
 
 ```
-╔═ PiScope  ·  BATTERY ──────────────────────────────────────────────────────────╗
+╔═ PiStats  ·  BATTERY ──────────────────────────────────────────────────────────╗
 ║  Overview │ Temperature │ Performance │ ◀ Battery ▶ │ Config                   ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
 ║ > LIVE POWER                                                                   ║
@@ -253,7 +253,7 @@ from `spikes.csv`.
 ║   BATTERY  45 Wh → ~8.3 h @ avg · ~7.5 h @ p95 (conservative)                  ║
 ║            NOTE: PMIC excludes USB/fan/regulator losses; set wall factor       ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
-║ piscope › _     ? commands · ↑ ↓ rows · Enter detail                           ║
+║ pistats › _     ? commands · ↑ ↓ rows · Enter detail                           ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 ```
 
@@ -263,10 +263,10 @@ from `spikes.csv`.
 
 Navigate with `↑`/`↓`, press `Enter` on a row to edit it, type the new value,
 `Enter` to save, `Esc` to cancel. Changes apply immediately and are saved to
-`~/.config/piscope/config.json`.
+`~/.config/pistats/config.json`.
 
 ```
-╔═ PiScope  ·  CONFIG ───────────────────────────────────────────────────────────╗
+╔═ PiStats  ·  CONFIG ───────────────────────────────────────────────────────────╗
 ║  Overview │ Temperature │ Performance │ Battery │ ◀ Config ▶                   ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
 ║ > Render dashboard every    [ 1 s ]      ← → tabs · ↑ ↓ select · Enter edit    ║
@@ -279,7 +279,7 @@ Navigate with `↑`/`↓`, press `Enter` on a row to edit it, type the new value
 ║   Energy windows            [ 60,120 min ]                                     ║
 ║   Cron status               [ RUNNING ]   → /cron stop to disable              ║
 ╟────────────────────────────────────────────────────────────────────────────────╢
-║ piscope › _     ? commands · ↑ ↓ select · Enter edit · Esc cancel              ║
+║ pistats › _     ? commands · ↑ ↓ select · Enter edit · Esc cancel              ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 ```
 
@@ -299,7 +299,7 @@ its detail (or the editor in Config).
 Press `?` to open the list; typing filters it; `↑`/`↓` selects, `Enter` runs, `Esc` closes.
 
 ```
-║ piscope › ?re_
+║ pistats › ?re_
 ║   /reset            Delete all collected data and start fresh
 ║   /report           Show the full saved report
 ║   /range 7d         Show results for a time range (2h, 24h, 7d, dates)
@@ -307,7 +307,7 @@ Press `?` to open the list; typing filters it; `↑`/`↓` selects, `Enter` runs
 ║   /cron start       Start / stop / check the cron job
 ║   /mode power       Switch mode: temp | power | both
 ║   /pause            Pause live rendering
-║   /quit             Exit PiScope
+║   /quit             Exit PiStats
 ```
 
 | Command | Effect |
@@ -319,7 +319,7 @@ Press `?` to open the list; typing filters it; `↑`/`↓` selects, `Enter` runs
 | `/mode temp` / `power` / `both` | Switch what is sampled |
 | `/test <minutes>` | Timed test with progress (replaces `run-test.sh` from inside the CLI) |
 | `/range 2h` / `7d` / `2026-11-20..21` | Scrollable historical report |
-| `/report` | Full current text report (same as `piscope view`) |
+| `/report` | Full current text report (same as `python3 pistats.py view`) |
 | `/decision` | Cooler verdict with all reasons |
 | `/pause` / `/resume` | Freeze / unfreeze rendering |
 | `/quit` | Exit; cron is untouched |
@@ -330,9 +330,9 @@ Press `?` to open the list; typing filters it; `↑`/`↓` selects, `Enter` runs
 
 - **Cron** samples once a minute in the background (`collect.sh --mode both`) — the
   same always-on pipeline as before, now with power and battery.
-- **`piscope`** renders at 1 Hz from in-memory samples. Only its configurable 1/min
-  persistence writes to CSV, using the same collector lock, so no duplicate rows.
-- Both the TUI and `piscope view` call the **same** `analyze.py` functions — numbers
+- **`python3 pistats.py`** renders at 1 Hz from in-memory samples. Only its configurable
+  1/min persistence writes to CSV, using the same collector lock, so no duplicate rows.
+- Both the TUI and `python3 pistats.py view` call the **same** `analyze.py` functions — numbers
   always agree.
 - The tabs are a different presentation of the existing report data, not a replacement.
 
@@ -341,7 +341,7 @@ Press `?` to open the list; typing filters it; `↑`/`↓` selects, `Enter` runs
 ## 12. Example sessions
 
 ```bash
-$ piscope                       # dashboard opens, renders every 1 s
+$ python3 pistats.py               # dashboard opens, renders every 1 s
 # → once: Temperature tab; ↓ repeatedly → highlight walks stats into the
 #   distribution sections, view auto-scrolls to keep the section visible
 # → again: Performance tab; ↓ to spike rows, Enter for process snapshot
@@ -356,8 +356,8 @@ $ piscope                       # dashboard opens, renders every 1 s
 ## 13. Implementation notes (for later, not done now)
 
 **New files**
-- `piscope` — single entry point; `piscope` with no args → TUI
-- `piscope_tui.py` — five tabs, command bar, `?` palette, 1 Hz render loop,
+- `pistats.py` — single entry point; `python3 pistats.py` with no args → TUI
+- `pistats_tui.py` — five tabs, command bar, `?` palette, 1 Hz render loop,
   auto-scrolling row selection, detail overlays
 - `setup-cron.sh` — cron installer (counterpart to `stop.sh`)
 
@@ -371,7 +371,7 @@ $ piscope                       # dashboard opens, renders every 1 s
 - `reset.sh` — also clears `power_log.csv`
 - `README.md` — new name, one-command workflow, tab/command guide
 
-**Config:** `~/.config/piscope/config.json` — render interval, sample interval, log
+**Config:** `~/.config/pistats/config.json` — render interval, sample interval, log
 cadence, mode, rate, battery Wh, wall factor, energy windows.
 
 **Data files:** `temp_log.csv`, `power_log.csv`, `spikes.csv` — already in `.gitignore`.

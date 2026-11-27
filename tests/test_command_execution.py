@@ -18,15 +18,15 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import piscope_config as cfgmod  # noqa: E402
-import piscope_commands as cmds  # noqa: E402
+import pistats_config as cfgmod  # noqa: E402
+import pistats_commands as cmds  # noqa: E402
 
 
 def get_execute_command():
-    """Canonical location is piscope_commands; a TUI re-export is also accepted."""
+    """Canonical location is pistats_commands; a TUI re-export is also accepted."""
     fn = getattr(cmds, 'execute_command', None)
     if fn is None:
-        import piscope_tui as tui
+        import pistats_tui as tui
         fn = getattr(tui, 'execute_command', None)
     return fn
 
@@ -83,7 +83,7 @@ class ExecutionTestBase(unittest.TestCase):
         self.assertIsNotNone(
             self.execute,
             'execute_command(cmd, context) must be importable from '
-            'piscope_commands (or re-exported from piscope_tui)')
+            'pistats_commands (or re-exported from pistats_tui)')
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = self.tmp.name
         self.config_path = os.path.join(self.dir, 'cfg', 'config.json')

@@ -1,4 +1,4 @@
-"""Pure command-palette parsing (and headless execution) for the PiScope TUI.
+"""Pure command-palette parsing (and headless execution) for the PiStats TUI.
 
 No TUI / textual dependency: all helpers are plain functions over strings and
 dicts so they can be unit-tested (and reused by the curses frontend) directly.
@@ -20,7 +20,7 @@ COMMANDS = [
     {'name': '/mode', 'description': 'Switch sampling mode: temp | power | both'},
     {'name': '/pause', 'description': 'Pause live rendering'},
     {'name': '/resume', 'description': 'Resume live rendering'},
-    {'name': '/quit', 'description': 'Exit PiScope (cron is left untouched)'},
+    {'name': '/quit', 'description': 'Exit PiStats (cron is left untouched)'},
     {'name': '/decision', 'description': 'Show the cooler verdict with all reasons'},
 ]
 
@@ -289,7 +289,7 @@ def execute_command(cmd, context):
 
     if name in ('/mode', '/config') and (
             name == '/mode' or (args and args[0].lower() == 'set')):
-        import piscope_config as cfgmod
+        import pistats_config as cfgmod
         config = context.get('config')
         if not isinstance(config, dict):
             config = cfgmod.load_config()
@@ -322,7 +322,7 @@ def execute_command(cmd, context):
         return _exec_result(True, 'Rendering resumed', ['resumed'])
     if name == '/quit':
         state['quit'] = True
-        return _exec_result(True, 'Exiting PiScope...', ['quit'])
+        return _exec_result(True, 'Exiting PiStats...', ['quit'])
     if name == '/decision':
         return _exec_result(True, 'Verdict shown', ['decision_shown'])
 

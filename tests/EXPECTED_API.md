@@ -1,4 +1,4 @@
-# PiScope — Expected API contract (for the implementation subagent)
+# PiStats — Expected API contract (for the implementation subagent)
 
 This file is the **authoritative interface** assumed by the tests in this directory.
 The tests are written first (TDD) and currently FAIL because these modules/functions
@@ -103,16 +103,16 @@ def main(argv=None) -> int: ...   # keep CLI behaviour; may add --range/--summar
 * `build_report` returns the **full text report** as a string (does not print). It
   must preserve every existing README field/section heading and append a
   `POWER / ENERGY / BATTERY` section when `power_log_file` is given and readable.
-  `piscope view` and `analyze.py <file>` call it so numbers always agree.
+  `pistats.py view` and `analyze.py <file>` call it so numbers always agree.
   `config` (when given) supplies `rate_per_kwh`, `battery_wh`, `energy_windows_min`.
 
 ---
 
-## 3. `piscope_config.py` (new)
+## 3. `pistats_config.py` (new)
 
 ```python
-CONFIG_REL_PATH = os.path.join('.config', 'piscope', 'config.json')
-CONFIG_PATH_ENV = 'PISCOPE_CONFIG_PATH'
+CONFIG_REL_PATH = os.path.join('.config', 'pistats', 'config.json')
+CONFIG_PATH_ENV = 'PISTATS_CONFIG_PATH'
 DEFAULT_CONFIG = {
     'render_interval_s': 1.0, 'sample_interval_s': 1.0, 'log_cadence_s': 60,
     'mode': 'both', 'rate_per_kwh': 0.15, 'battery_wh': 45.0,
@@ -144,7 +144,7 @@ def set_config_value(cfg: dict, key: str, value) -> dict: ...
 
 ---
 
-## 4. `piscope_commands.py` (new)
+## 4. `pistats_commands.py` (new)
 
 ```python
 COMMANDS = [ {'name': '/reset', 'description': '...'}, ... ]  # >= 12 entries
@@ -177,7 +177,7 @@ Required command names: `/help`, `/config`, `/reset`, `/report`, `/range`, `/tes
 
 ---
 
-## 5. `piscope_tui.py` (new — MUST import with `textual` absent)
+## 5. `pistats_tui.py` (new — MUST import with `textual` absent)
 
 ```python
 TABS = ['Overview', 'Temperature', 'Performance', 'Battery', 'Config']
@@ -223,25 +223,25 @@ def cancel_edit(state: dict) -> dict: ...
 
 ---
 
-## 6. `piscope_cli.py` + `piscope` entry script (new)
+## 6. `pistats_cli.py` + `pistats.py` entry script (new)
 
 ```python
-# piscope_cli.py
+# pistats_cli.py
 def build_parser() -> argparse.ArgumentParser: ...
 def main(argv=None) -> int: ...
 def run_view(args) -> int: ...
 def launch_tui(args) -> int: ...
 
-# piscope (repo root, executable, shebang python3)
-# -> imports main() from piscope_cli and calls sys.exit(main())
+# pistats.py (repo root, executable, shebang python3)
+# -> imports main() from pistats_cli and calls sys.exit(main())
 ```
 
-* `piscope --help` exits 0 and prints usage mentioning `piscope` and `view`.
-* `piscope view [LOG] [--power-log P] [--range 7d]` prints the report from
+* `python3 pistats.py --help` exits 0 and prints usage mentioning `pistats.py` and `view`.
+* `python3 pistats.py view [LOG] [--power-log P] [--range 7d]` prints the report from
   `analyze.build_report` and exits 0.
-* `piscope` (no args) calls `launch_tui` exactly once. Tests patch
-  `piscope_cli.launch_tui`.
-* `piscope view` on a missing log file exits non-zero with an informative message.
+* `python3 pistats.py` (no args) calls `launch_tui` exactly once. Tests patch
+  `pistats_cli.launch_tui`.
+* `python3 pistats.py view` on a missing log file exits non-zero with an informative message.
 
 ---
 
@@ -296,9 +296,9 @@ existing APIs remain unchanged. Pure logic must stay importable without
 
 ## 9. Command execution — `execute_command(cmd, context) -> result`
 
-**Canonical location:** `piscope_commands.execute_command`. A re-export from
-`piscope_tui` is also accepted (the test checks `piscope_commands` first, then
-`piscope_tui`). The TUI's command handler must call this function; the old
+**Canonical location:** `pistats_commands.execute_command`. A re-export from
+`pistats_tui` is also accepted (the test checks `pistats_commands` first, then
+`pistats_tui`). The TUI's command handler must call this function; the old
 "return status text only" behaviour of `/test`, `/reset`, `/report`, `/range`,
 `/cron` must be replaced by real execution through the injected context.
 
@@ -354,8 +354,8 @@ real reset is never destructive without explicit confirmation).
 | `/cron start` | Use `crontab_runner`: read with `['crontab','-l']`, ensure exactly one collector line exists (contains `collect.sh` and `--mode both`), write full content via `['crontab','-']` with the new text as the **`input=` kwarg**. Preserve all unrelated lines. Idempotent across repeated starts. | `cron_started` | — |
 | `/cron stop` | Read with `['crontab','-l']`, remove lines containing `collect.sh`, preserve unrelated lines, write via `['crontab','-']` with `input=`. | `cron_stopped` | — |
 | `/cron status` | Only call `['crontab','-l']`; **never** call `['crontab','-']`. `status` must contain `running` (case-insensitive) when a collector line exists, else `stopped`. | `cron_status` | — |
-| `/mode X` | Update `config['mode']` and persist to `context['config_path']` (via `piscope_config.save_config`). `X ∈ {temp,power,both}`. | `mode_changed` | `'config': dict` |
-| `/config set K V` | Use `piscope_config.set_config_value`; persist to `config_path`. | `config_changed` | `'config': dict` |
+| `/mode X` | Update `config['mode']` and persist to `context['config_path']` (via `pistats_config.save_config`). `X ∈ {temp,power,both}`. | `mode_changed` | `'config': dict` |
+| `/config set K V` | Use `pistats_config.set_config_value`; persist to `config_path`. | `config_changed` | `'config': dict` |
 | `/pause` / `/resume` | Set `state['paused']` True / False. | `paused` / `resumed` | — |
 | `/quit` | Set `state['quit'] = True`. | `quit` | — |
 | `/help`, `/decision`, `/config` (no args) | Keep prior status behaviour; harmless no-op effects. | `help_shown` etc. | — |
@@ -368,7 +368,7 @@ Notes:
   when a context is provided.
 * `execute_command` must remain importable with `textual` absent.
 
-## 10. Rich detail overlays — `piscope_tui.build_detail(row, tab, ctx) -> dict`
+## 10. Rich detail overlays — `pistats_tui.build_detail(row, tab, ctx) -> dict`
 
 ```python
 def build_detail(row: dict, tab: str, ctx: dict | None = None) -> dict: ...
@@ -457,16 +457,16 @@ setup-cron.sh start|stop|status
 ## 12. README.md (design.md §13)
 
 The tests read `README.md` from the repo root. It must be rewritten so that:
-* The **first heading** contains `PiScope` (case-insensitive).
-* A **bare `piscope` line** appears (one-command workflow, no args/subcommand;
+* The **first heading** contains `PiStats` (case-insensitive).
+* A **`python3 pistats.py` line** appears (one-command workflow, no args/subcommand;
   an optional `$` prompt and `#` comment are accepted by the regex
-  `^\$?\s*piscope\s*(#.*)?$`), and text describing "one command" / "no flags" /
-  "single command" / "just run" / "opens everything" appears.
+  `^\$?\s*python3\s+pistats\.py\s*(#.*)?$`), and text describing "one command" /
+  "no flags" / "single command" / "just run" / "opens everything" appears.
 * All five tabs are mentioned, in order: Overview, Temperature, Performance,
   Battery, Config. Config must be explicitly described as last/fifth.
 * `?` is documented as the command palette trigger; the literals `/test`,
   `/reset`, `/report`, `/range`, `/cron`, `/mode`, `/config`, `/quit` appear.
-* `config.json` is documented (the `~/.config/piscope/config.json` path).
+* `config.json` is documented (the `~/.config/pistats/config.json` path).
 * All three modes `temp`, `power`, `both` are documented.
 * `power`, `cost`, `battery` are documented, along with Wh / kWh units.
 
@@ -474,9 +474,9 @@ The tests read `README.md` from the repo root. It must be rewritten so that:
 
 `test_design_gaps.py` verifies two design requirements that had no direct test:
 * `power_read.read_power(env=...)` honours `wall_factor` from config at
-  `PISCOPE_CONFIG_PATH` (returns `pmic_w`, `wall_w == pmic_w * wall_factor`,
+  `PISTATS_CONFIG_PATH` (returns `pmic_w`, `wall_w == pmic_w * wall_factor`,
   `wall_factor`).
-* `piscope_cli.main(['view', LOG, '--range', '7d'])` calls
+* `pistats_cli.main(['view', LOG, '--range', '7d'])` calls
   `analyze.build_report(..., range_spec='7d')` (assert via mock.patch).
 
 ---
@@ -496,16 +496,16 @@ not wired in is not a fix.
 ## 14.1 Palette Enter runs the highlighted command (bug 1)
 
 ```python
-# piscope_tui.py
+# pistats_tui.py
 def resolve_palette_enter(buffer, filtered=None, cmd_index=0,
                           parse_fn=None) -> str: ...
 ```
 
 * `filtered` is the list of command dicts currently shown (the result of
-  `piscope_commands.filter_commands(buffer)`); `cmd_index` is the highlighted
+  `pistats_commands.filter_commands(buffer)`); `cmd_index` is the highlighted
   index into it and may be out of range.
 * If `str(buffer).strip()` is a **valid complete command** according to
-  `piscope_commands.parse_command` (or `parse_fn`), return that text verbatim —
+  `pistats_commands.parse_command` (or `parse_fn`), return that text verbatim —
   this preserves design §12 flows such as typing
   `/config set battery_wh 60` and pressing Enter.
 * Otherwise (buffer is a filter fragment such as `re`), return the **name of
@@ -519,7 +519,7 @@ def resolve_palette_enter(buffer, filtered=None, cmd_index=0,
 ## 14.2 Section anchoring must keep the selected row visible (bug 2)
 
 ```python
-# piscope_tui.py — change the EXISTING pure helper, no new API needed
+# pistats_tui.py — change the EXISTING pure helper, no new API needed
 def scroll_to_section(rows, index, scroll, viewport_height) -> int: ...
 ```
 
@@ -569,9 +569,9 @@ def filter_records_by_range(records, range_spec, now=None) -> list[dict]: ...
 
 ## 14.4 Collector honours the TUI's power-log env var (bug 4)
 
-`collect.sh` must accept **both** `PISCOPE_POWER_LOG` (the variable
-`piscope_tui._persist_sample` sets) and the legacy `POWER_LOG`.  When only
-`PISCOPE_POWER_LOG` is set, the power CSV must be written there (header
+`collect.sh` must accept **both** `PISTATS_POWER_LOG` (the variable
+`pistats_tui._persist_sample` sets) and the legacy `POWER_LOG`.  When only
+`PISTATS_POWER_LOG` is set, the power CSV must be written there (header
 `timestamp,pmic_w,wall_w` plus the sampled row) and not to the default sibling
 `power_log.csv`.  When only `POWER_LOG` is set, current behaviour is preserved.
 All other paths remain overridable (`COLLECTOR_PID_FILE`, `SPIKE_STATE_FILE`,
@@ -580,7 +580,7 @@ All other paths remain overridable (`COLLECTOR_PID_FILE`, `SPIKE_STATE_FILE`,
 ## 14.5 Pure key → action mapping (bug 5)
 
 ```python
-# piscope_tui.py
+# pistats_tui.py
 def resolve_key_action(key, curses_mod=None) -> str | None: ...
 ```
 
@@ -597,14 +597,14 @@ def resolve_key_action(key, curses_mod=None) -> str | None: ...
 
 ## 14.6 Report title (bug 6)
 
-The first report heading produced by `build_report` must contain `PiScope` and
+The first report heading produced by `build_report` must contain `PiStats` and
 must still preserve the legacy substring `TEMPERATURE & COOLER DECISION
-REPORT`, e.g. `' PiScope - TEMPERATURE & COOLER DECISION REPORT'`.
+REPORT`, e.g. `' PiStats - TEMPERATURE & COOLER DECISION REPORT'`.
 
 ## 14.7 Config inline edit pre-fill (bug 7)
 
 ```python
-# piscope_tui.py
+# pistats_tui.py
 def start_config_edit(state, rows) -> dict: ...
 ```
 
@@ -624,7 +624,7 @@ def start_config_edit(state, rows) -> dict: ...
 ## 14.8 Renderable palette with visible selection (bug 8)
 
 ```python
-# piscope_tui.py
+# pistats_tui.py
 def build_palette_view(filtered, cmd_index=0, limit=4) -> dict: ...
 ```
 
@@ -645,7 +645,7 @@ Returns `{'lines': list[str], 'index': int, 'start': int}`:
 ## 14.9 Esc focuses the command bar (bug 9)
 
 ```python
-# piscope_tui.py
+# pistats_tui.py
 def handle_escape(state) -> dict: ...
 ```
 
@@ -658,8 +658,8 @@ def handle_escape(state) -> dict: ...
 ## 14.10 Strengthened home-write guard (bug 10)
 
 `test_config.py::test_no_real_home_write` now points `HOME` at a temp dir
-before calling `save_config` with `PISCOPE_CONFIG_PATH` set, and asserts no
-`~/.config/piscope/config.json` (nor any `~/.config` tree) is created.  The
+before calling `save_config` with `PISTATS_CONFIG_PATH` set, and asserts no
+`~/.config/pistats/config.json` (nor any `~/.config` tree) is created.  The
 current implementation already behaves correctly, so this test passes today;
 it exists to prevent a future regression.  No application change is needed
 for this item.

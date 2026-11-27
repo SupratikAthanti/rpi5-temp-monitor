@@ -1,6 +1,6 @@
-# PiScope — Live CLI Dashboard, Power & Cooler Decision Engine
+# PiStats — Live CLI Dashboard, Power & Cooler Decision Engine
 
-PiScope is a lightweight temperature **and** power monitoring system for
+PiStats is a lightweight temperature **and** power monitoring system for
 single-board computers (Raspberry Pi, Arduino, etc.). It answers two questions:
 
 **Do I actually need a passive heatsink or an active cooler — and what is my
@@ -11,10 +11,10 @@ board costing me to run?**
 ## One command opens everything
 
 ```bash
-piscope
+python3 pistats.py
 ```
 
-That's it: **one command, no flags, no numbered menus**. PiScope opens a
+That's it: **one command, no flags, no numbered menus**. PiStats opens a
 full-screen dashboard that renders every second. It is a single command that
 opens everything — live temperature, power, cost, battery, throttling and the
 full analysis — over SSH or on the console.
@@ -22,22 +22,22 @@ full analysis — over SSH or on the console.
 To print a saved report instead of opening the dashboard:
 
 ```bash
-piscope view temp_log.csv --power-log power_log.csv --range 7d
+python3 pistats.py view temp_log.csv --power-log power_log.csv --range 7d
 ```
 
-### Launch with plain Python (no PATH setup)
+### No PATH setup needed
 
-You don't need `piscope` on your `PATH` — `start.py` is a normal Python script
-that works from any directory:
+`pistats.py` is a normal Python script, so `python3 pistats.py` works without putting
+anything on your `PATH` and from any directory. Run it with the absolute path
+if you like:
 
 ```bash
-python3 /home/berry5/projects/temp/start.py
-python3 /home/berry5/projects/temp/start.py view temp_log.csv --power-log power_log.csv
+python3 /home/berry5/projects/temp/pistats.py
+python3 /home/berry5/projects/temp/pistats.py view temp_log.csv --power-log power_log.csv
 ```
 
 It resolves its own location, so it always finds its companion modules. Log
 paths given to `view` are still interpreted relative to your current directory.
-The `piscope` file is just a thin shim around the same launcher.
 
 ---
 
@@ -61,7 +61,7 @@ The dashboard has exactly five tabs, always in this order:
 auto-scrolls to keep it visible), `Enter` opens a row's detail / provenance
 overlay (or edits a setting in Config), and `Esc` closes overlays, cancels an
 edit, closes the Sampling sub-view or the command palette — at the main screen
-(with nothing open) it exits PiScope. `Home` / `End` jump to the first / last
+(with nothing open) it exits PiStats. `Home` / `End` jump to the first / last
 row, `PgUp` / `PgDn` jump a page.
 
 The dashboard uses a cyan/blue/yellow colour theme (with red for critical
@@ -86,12 +86,12 @@ to select, `Enter` to run, `Esc` to close.
 | `/mode temp` / `/mode power` / `/mode both` | Switch what is sampled |
 | `/decision` | Show the cooler verdict with all reasons |
 | `/pause` / `/resume` | Freeze / unfreeze live rendering |
-| `/quit` | Exit PiScope (cron is left untouched) |
+| `/quit` | Exit PiStats (cron is left untouched) |
 
 **Example session**
 
 ```
-$ piscope                         # dashboard opens, renders every 1 s
+$ python3 pistats.py                 # dashboard opens, renders every 1 s
   ?  → type "/range 7d", Enter      # scrollable 7-day report
   ?  → type "/config set rate_per_kwh 0.22", Enter
   ?  → type "/cron start", Enter    # background collection begins
@@ -100,10 +100,10 @@ $ piscope                         # dashboard opens, renders every 1 s
 
 ---
 
-## Configuration — `~/.config/piscope/config.json`
+## Configuration — `~/.config/pistats/config.json`
 
-All settings live in `~/.config/piscope/config.json` (override the path with
-`PISCOPE_CONFIG_PATH`). The Config tab and `/config set` edit the same file:
+All settings live in `~/.config/pistats/config.json` (override the path with
+`PISTATS_CONFIG_PATH`). The Config tab and `/config set` edit the same file:
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -144,7 +144,7 @@ immediately and are written to the config file.
 
 ## Power, cost and battery
 
-PiScope sums the PMIC rails (`watts = max(V) × ΣA`, excluding voltage-only rails
+PiStats sums the PMIC rails (`watts = max(V) × ΣA`, excluding voltage-only rails
 `EXT5V_V` and `BATT_V`) to report live **power** in watts and a wall estimate
 using the configured wall factor. It integrates power over time into **energy**
 in **Wh** (watt-hours), applies your **cost** rate in **$/kWh** (kilowatt-hours)
@@ -156,18 +156,20 @@ windows, cost and conservative (p95-based) runtime.
 
 ## Repository files
 
-- `start.py` — Python launcher: `python3 start.py` → TUI, `python3 start.py view` → report.
-- `piscope` — thin shim delegating to `start.py` (`piscope` → TUI, `piscope view` → report).
-- `piscope_tui.py` — the five tabs, command palette, detail overlays and 1 Hz loop.
-- `piscope_commands.py` — command parsing and headless execution.
-- `piscope_config.py` — configuration defaults, persistence and validation.
-- `piscope_cli.py` — command-line argument handling.
+- `pistats.py` — entry point: `python3 pistats.py` → TUI, `python3 pistats.py view` → report
+  (delegates to `start.py`).
+- `start.py` — launcher used by `pistats.py`; resolves its own directory so the
+  companion modules are importable from any working directory.
+- `pistats_tui.py` — the five tabs, command palette, detail overlays and 1 Hz loop.
+- `pistats_commands.py` — command parsing and headless execution.
+- `pistats_config.py` — configuration defaults, persistence and validation.
+- `pistats_cli.py` — command-line argument handling.
 - `collect.sh` — the cron collector / spike detector (`--mode temp|power|both`).
 - `power_read.py` — PMIC rail-sum helper shared by the collector, TUI and CLI.
 - `analyze.py` — statistics, distributions, power/energy math and verdict engine.
 - `run-test.sh` — timed test with progress (also callable from `/test`).
 - `setup-cron.sh` — install the background collector (`start|stop|status`).
-- `stop.sh` — remove PiScope's cron entry.
+- `stop.sh` — remove PiStats's cron entry.
 - `reset.sh` — clear all collected data and state files.
 - `tests/` — unit and simulation test suite.
 
@@ -175,7 +177,7 @@ windows, cost and conservative (p95-based) runtime.
 
 ## Legacy workflows (still available)
 
-The original shell workflows still work unchanged; PiScope's commands simply
+The original shell workflows still work unchanged; PiStats's commands simply
 wrap them.
 
 ### Quick test (2 minutes)
@@ -193,16 +195,16 @@ python3 analyze.py temp_log.csv
 ./run-test.sh --progress       # check progress from another terminal
 ```
 
-Or, from inside PiScope, type `?` then `/test 60`. Custom durations: 30 / 480 /
+Or, from inside PiStats, type `?` then `/test 60`. Custom durations: 30 / 480 /
 1440 minutes are all accepted. For a background run use
-`tmux new -s piscope-test`, then `./run-test.sh 60` and `Ctrl+B`, `D` to detach.
+`tmux new -s pistats-test`, then `./run-test.sh 60` and `Ctrl+B`, `D` to detach.
 
 ### Run for 1 week (full monitoring)
 
 ```bash
 ./setup-cron.sh start          # installs one collector line; idempotent
 ./setup-cron.sh status
-./setup-cron.sh stop           # removes only PiScope's line
+./setup-cron.sh stop           # removes only PiStats's line
 ```
 
 You can still edit the crontab by hand:
@@ -219,7 +221,7 @@ File locking prevents concurrent runs if a script takes longer than one minute.
 ```bash
 python3 analyze.py temp_log.csv
 # or, with power data:
-piscope view temp_log.csv --power-log power_log.csv
+python3 pistats.py view temp_log.csv --power-log power_log.csv
 ```
 
 Both routes call the same `analyze.build_report`, so the numbers always agree.
@@ -227,7 +229,7 @@ Both routes call the same `analyze.build_report`, so the numbers always agree.
 ### Stop / reset
 
 ```bash
-./stop.sh     # remove PiScope from crontab (or /cron stop in the TUI)
+./stop.sh     # remove PiStats from crontab (or /cron stop in the TUI)
 ./reset.sh    # clear all data files and state (or /reset in the TUI)
 ```
 
@@ -295,7 +297,7 @@ for 1 hour, p95 still shows ~84 °C.
 
 ```text
 =================================================================
- PISCOPE - TEMPERATURE, POWER & COOLER DECISION REPORT
+ PISTATS - TEMPERATURE, POWER & COOLER DECISION REPORT
 =================================================================
  Log File          : temp_log.csv
  Total Samples     : 63

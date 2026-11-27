@@ -1,4 +1,4 @@
-"""CLI entry-point tests for `piscope`.
+"""CLI entry-point tests for `pistats.py`.
 
 Covers existence/executability, --help, `view` text report, and the no-argument
 TUI entry path (mocked so no real TUI is started).
@@ -16,7 +16,7 @@ from unittest import mock
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-SCRIPT = os.path.join(REPO, 'piscope')
+SCRIPT = os.path.join(REPO, 'pistats.py')
 START_SCRIPT = os.path.join(REPO, 'start.py')
 
 TEMP_CSV = """timestamp,soc_temp_c,pmic_temp_c,load_1m,arm_freq_mhz,throttled_hex,top_proc,top_cpu_pct
@@ -28,11 +28,11 @@ TEMP_CSV = """timestamp,soc_temp_c,pmic_temp_c,load_1m,arm_freq_mhz,throttled_he
 class TestEntryScript(unittest.TestCase):
     def test_entry_point_exists(self):
         self.assertTrue(os.path.exists(SCRIPT),
-                        'piscope entry script is missing at repo root')
+                        'pistats.py entry script is missing at repo root')
 
     def test_entry_point_is_executable(self):
         self.assertTrue(os.path.exists(SCRIPT))
-        self.assertTrue(os.access(SCRIPT, os.X_OK), 'piscope must be executable')
+        self.assertTrue(os.access(SCRIPT, os.X_OK), 'pistats.py must be executable')
 
     def test_help_exits_zero_and_prints_usage(self):
         self.assertTrue(os.path.exists(SCRIPT))
@@ -41,7 +41,19 @@ class TestEntryScript(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stderr)
         out = (res.stdout + res.stderr).lower()
         self.assertIn('usage', out)
-        self.assertIn('piscope', out)
+        self.assertIn('pistats.py', out)
+        self.assertIn('view', out)
+
+    def test_python3_invocation_works(self):
+        # The documented entry point is `python3 pistats.py`.
+        self.assertTrue(os.path.exists(SCRIPT))
+        res = subprocess.run([sys.executable, SCRIPT, '--help'],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, timeout=20)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        out = (res.stdout + res.stderr).lower()
+        self.assertIn('usage', out)
+        self.assertIn('python3 pistats.py', out)
         self.assertIn('view', out)
 
     def test_view_mode_prints_text_report(self):
@@ -88,8 +100,8 @@ class TestPythonLauncher(unittest.TestCase):
 
 class TestCliModule(unittest.TestCase):
     def setUp(self):
-        import piscope_cli  # noqa: F401  (import is the smoke test)
-        self.cli = sys.modules['piscope_cli']
+        import pistats_cli  # noqa: F401  (import is the smoke test)
+        self.cli = sys.modules['pistats_cli']
 
     def test_build_parser_returns_parser(self):
         parser = self.cli.build_parser()

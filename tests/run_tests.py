@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Parallel stdlib-unittest runner for the PiScope test suite.
+"""Parallel stdlib-unittest runner for the PiStats test suite.
 
 Design constraints (from the project brief):
   * never more than 2 concurrent test processes (RPi 5, 4 GB),
@@ -166,7 +166,7 @@ def main():
     results, timed_out = _run_parallel(buckets)
 
     print('=' * 64)
-    print(' PiScope test suite (parallel, max 2 workers)')
+    print(' PiStats test suite (parallel, max 2 workers)')
     print('=' * 64)
     for r in results:
         status = 'OK' if (r['failures'] == 0 and r['errors'] == 0) else 'FAIL'

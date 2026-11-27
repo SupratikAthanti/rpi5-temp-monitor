@@ -1,8 +1,8 @@
-"""UI right-edge / alignment regression coverage for PiScope.
+"""UI right-edge / alignment regression coverage for PiStats.
 
 Two kinds of invariants live here:
 
-1. Runtime invariants driven through ``piscope_tui._render`` with a fake
+1. Runtime invariants driven through ``pistats_tui._render`` with a fake
    ``stdscr`` that records every ``addnstr`` call into a character grid.
    These assert that no drawn line can overrun the terminal width and that
    the structural lines (header, tab bar, command bar, Config caret) stay
@@ -22,7 +22,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import piscope_tui as tui  # noqa: E402
+import pistats_tui as tui  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 DESIGN = os.path.join(ROOT, 'design.md')

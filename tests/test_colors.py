@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import piscope_tui as tui  # noqa: E402
+import pistats_tui as tui  # noqa: E402
 
 
 def fake_curses():
