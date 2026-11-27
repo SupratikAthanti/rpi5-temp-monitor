@@ -154,6 +154,16 @@ ticks, dated when the window crosses days, sit under each plot, with unit-aware
 min/max floors (2 °C / 1 W) for tiny early variations. Energy is integrated
 from the compacted history with duration-weighted trapezoids.
 
+Plotted cells and the value labels are colour-coded by the peak value each
+cell represents (inclusive thresholds): **normal** below the throttle zones,
+**orange** at 80 °C (Pi 5 soft thermal throttle) or 15 W (config
+`power_warn_w`), and **red** at 85 °C (hard thermal throttle) or 25 W (config
+`power_critical_w`). The pure renderer emits `(text, level)` chunks so the TUI
+can colour individual stretches of the same line while the plain-text graph is
+unchanged. Curses has no standard orange: colour-capable terminals define a
+custom orange, otherwise the warn colour falls back to yellow; without colour
+support every attribute is 0.
+
 ---
 
 ## 6. Tab 2 — Temperature (stats **and** all distributions)

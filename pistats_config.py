@@ -22,13 +22,17 @@ DEFAULT_CONFIG = {
     'wall_slope': 1.0,
     'wall_intercept': 0.0,
     'energy_windows_min': [60, 120],
+    # Graph colour thresholds (values >= threshold are orange / red).
+    # Temperature thresholds are fixed in pistats_dashboard.py (80 / 85 °C).
+    'power_warn_w': 15.0,               # soft throttle / warm power -> orange
+    'power_critical_w': 25.0,           # hard throttle / hot power -> red
 }
 
-# The eight settings that can be changed live from the Config tab / /config set.
+# Settings that can be changed live from the Config tab / /config set.
 LIVE_KEYS = {
     'render_interval_s', 'sample_interval_s', 'power_sample_interval_s',
     'log_cadence_s', 'mode', 'rate_per_kwh', 'battery_wh', 'wall_factor',
-    'energy_windows_min',
+    'energy_windows_min', 'power_warn_w', 'power_critical_w',
 }
 
 
@@ -87,6 +91,15 @@ def validate_config(cfg):
     if 'wall_intercept' in cfg:
         out['wall_intercept'] = _as_float(
             cfg['wall_intercept'], DEFAULT_CONFIG['wall_intercept'])
+
+    # Power graph thresholds; keep the critical edge at or above the warn edge
+    # so a value can never be classified as critical below the warn level.
+    for key in ('power_warn_w', 'power_critical_w'):
+        if key in cfg:
+            out[key] = _clamp(_as_float(cfg[key], DEFAULT_CONFIG[key]),
+                              0.0, 1000.0)
+    if out['power_critical_w'] < out['power_warn_w']:
+        out['power_critical_w'] = out['power_warn_w']
 
     if 'energy_windows_min' in cfg:
         raw = cfg['energy_windows_min']

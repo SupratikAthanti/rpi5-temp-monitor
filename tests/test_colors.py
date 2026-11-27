@@ -93,6 +93,17 @@ class TestColorTheme(unittest.TestCase):
                          fake.color_pair(role_pairs['selected']))
         self.assertTrue(tui._selected_style() & tui._COLOR_ATTRS['selected'])
 
+    def test_graph_roles_keep_the_existing_semantic_colours(self):
+        roles = dict(tui._THEME_COLORS)
+        self.assertEqual(roles['warn'], 'COLOR_YELLOW')
+        self.assertEqual(roles['critical'], 'COLOR_RED')
+        self.assertEqual(roles['selected'], 'COLOR_GREEN')
+        self.assertEqual(roles['graph_critical'], 'COLOR_RED')
+        self.assertIn('graph_warn', roles)
+        self.assertEqual(tui._GRAPH_LEVEL_ROLE, {
+            'normal': 'value', 'warn': 'graph_warn',
+            'critical': 'graph_critical'})
+
     def test_no_curses_keeps_selected_plain(self):
         tui._curses = None
         tui._COLOR_ATTRS.clear()

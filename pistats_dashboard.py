@@ -15,6 +15,13 @@ four times the vertical resolution of a character grid while remaining a
 single codepoint per cell (the existing clipping / length logic still works).
 Each plotted column is a one-subpixel-wide stroke covering that column's
 min/max envelope, so short spikes survive downsampling.
+
+Graph segments carry a semantic level per cell: ``normal``, ``warn`` (orange)
+or ``critical`` (red).  Temperature thresholds follow the Pi 5 thermal
+throttle points (80 °C soft / 85 °C hard); power thresholds come from the
+config (``power_warn_w`` / ``power_critical_w``, default 15 W / 25 W).  A cell
+is coloured from the highest value it represents, so a spike is never drawn
+cooler than it really was.
 """
 
 import csv
@@ -42,6 +49,30 @@ GRAPH_WINDOW_S = 300.0               # legacy fallback: trailing energy hold cap
 DEFAULT_RATE = 0.13                  # dollars per kWh (13.0 cents)
 MIN_Y_RANGE = {'°C': 2.0, 'W': 1.0}  # startup anti-magnification floors
 BRAILLE_BASE = 0x2800
+# Pi 5 thermal throttle points: 80 °C soft (orange), 85 °C hard (red).
+TEMP_WARN_C = 80.0
+TEMP_CRITICAL_C = 85.0
+GRAPH_LEVELS = ('normal', 'warn', 'critical')
+
+
+def value_level(value, warn_at=None, critical_at=None):
+    """Classify a plotted value as ``normal`` / ``warn`` / ``critical``.
+
+    Thresholds are inclusive (``>=``); ``None`` disables a threshold.  Bad
+    input is simply ``normal``, keeping graph rendering exception-free.
+    """
+    number = _finite(value)
+    if number is None:
+        return 'normal'
+    if critical_at is not None:
+        critical = _finite(critical_at)
+        if critical is not None and number >= critical:
+            return 'critical'
+    if warn_at is not None:
+        warn = _finite(warn_at)
+        if warn is not None and number >= warn:
+            return 'warn'
+    return 'normal'
 
 
 class Sample(NamedTuple):
@@ -609,8 +640,14 @@ def _braille_dot(column, row):
     return 1 << (row + 4 * column)
 
 
-def _draw_braille_line(bits, columns, rows, x0, y0, x1, y1):
-    """Bresenham stroke between two subpixels (one subpixel thick)."""
+def _draw_braille_line(bits, columns, rows, x0, y0, x1, y1,
+                       dot_values=None, high_value=None):
+    """Bresenham stroke between two subpixels (one subpixel thick).
+
+    ``dot_values`` optionally records the highest source value drawn at each
+    subpixel; interpolation uses the larger endpoint so a falling spike is
+    still coloured by its peak.
+    """
     dx = abs(x1 - x0)
     dy = -abs(y1 - y0)
     sx = 1 if x0 < x1 else -1
@@ -619,6 +656,10 @@ def _draw_braille_line(bits, columns, rows, x0, y0, x1, y1):
     while True:
         if 0 <= x0 < columns and 0 <= y0 < rows:
             bits[y0][x0] |= _braille_dot(x0 % 2, y0 % 4)
+            if dot_values is not None and high_value is not None:
+                previous = dot_values[y0][x0]
+                if previous is None or high_value > previous:
+                    dot_values[y0][x0] = high_value
         if x0 == x1 and y0 == y1:
             break
         doubled = 2 * error
@@ -668,14 +709,47 @@ def braille_sparkline(values, width=12):
     return ''.join(characters)[:max(0, int(width))]
 
 
-def render_graph(samples, width=48, height=6, *, title='', unit='',
-                 current=None, window_s=None, now=None, nonnegative=False):
-    """Render a time series as labelled, thin braille lines.
+def _coalesce_segments(parts):
+    """Merge adjacent chunks that share a level (keeps plain text intact)."""
+    out = []
+    for chunk, level in parts:
+        if not chunk:
+            continue
+        if out and out[-1][1] == level:
+            out[-1] = (out[-1][0] + chunk, level)
+        else:
+            out.append((chunk, level))
+    return out
 
-    Returns a list of strings: a header (title, current value, adaptive time
-    window), ``height`` plot rows (2 x 4 braille subpixels per cell), an x-axis
-    row with several tick labels and a footer with min / max and the time span.
-    Pure: no curses, no I/O, no exceptions on bad input.
+
+def _fit_segments(parts, width):
+    """Fit pre-segmented text exactly as ``_fit`` fits a plain string."""
+    shown = _fit(''.join(chunk for chunk, _level in parts), width)
+    if not shown:
+        return []
+    levels = []
+    for chunk, level in parts:
+        levels.extend([level] * len(chunk))
+    fitted = [(char, levels[min(index, len(levels) - 1)])
+              for index, char in enumerate(shown)]
+    return _coalesce_segments(fitted)
+
+
+def render_graph_segments(samples, width=48, height=6, *, title='', unit='',
+                          current=None, window_s=None, now=None,
+                          nonnegative=False, warn_at=None, critical_at=None):
+    """Render a graph as styled chunks, with no curses / I/O.
+
+    Each returned line is a list of ``(text, level)`` chunks where ``level`` is
+    ``normal``, ``warn`` or ``critical``.  Thresholds are inclusive; pass
+    ``None`` to disable one.  Concatenating all chunks in a line reproduces the
+    exact plain string returned by :func:`render_graph`.
+
+    Braille cells are coloured from the highest value represented by any of
+    their subpixels (the min/max envelope and the interpolated stroke), so a
+    brief spike into the throttle zone is never under-coloured.  The header's
+    current value and the footer's min/max labels are classified by the values
+    they display; axis ticks and the y glyph stay normal.
     """
     plot_w = max(4, int(width) - 2)
     plot_h = max(1, int(height))
@@ -712,18 +786,25 @@ def render_graph(samples, width=48, height=6, *, title='', unit='',
         current_value = visible[-1][3]
     shown = ('—' if current_value is None
              else f'{current_value:.1f}{unit}')
-    header = _fit(f'{title}  now {shown}  last {format_window_s(window)}',
-                  width)
+    window_text = format_window_s(window)
+    header_parts = [
+        (f'{title}  now ', 'normal'),
+        (shown, value_level(current_value, warn_at, critical_at)),
+        (f'  last {window_text}', 'normal'),
+    ]
 
     columns, rows = plot_w * 2, plot_h * 4
     bits = [[0] * columns for _ in range(rows)]
+    dot_values = [[None] * columns for _ in range(rows)]
+    plot_parts = []
     if not visible:
-        grid = [[' '] * plot_w for _ in range(plot_h)]
+        grid = [[(' ', 'normal') for _ in range(plot_w)]
+                for _ in range(plot_h)]
         notice = 'waiting for samples'
         offset = max(0, (plot_w - len(notice)) // 2)
         for index, char in enumerate(notice[:plot_w - offset]):
-            grid[0][offset + index] = char
-        axis = 'min —  max —  waiting for samples'
+            grid[0][offset + index] = (char, 'normal')
+        axis_parts = [('min —  max —  waiting for samples', 'normal')]
     else:
         low, high = series_y_bounds(visible, unit=unit,
                                     nonnegative=nonnegative)
@@ -740,6 +821,7 @@ def render_graph(samples, width=48, height=6, *, title='', unit='',
 
         envelope = {}
         representatives = {}
+        rep_values = {}
         for stamp, band_low, band_high, value in visible:
             column = to_column(stamp)
             top, bottom = to_row(band_high), to_row(band_low)
@@ -748,34 +830,73 @@ def render_graph(samples, width=48, height=6, *, title='', unit='',
                 bottom = max(bottom, envelope[column][1])
             envelope[column] = (top, bottom)
             representatives[column] = to_row(value)
-        for column, (top, bottom) in envelope.items():
+            peak = max(band_low, band_high, value)
+            rep_values[column] = max(peak, rep_values.get(column, peak))
             for row in range(top, bottom + 1):
                 bits[row][column] |= _braille_dot(column % 2, row % 4)
+                previous = dot_values[row][column]
+                if previous is None or peak > previous:
+                    dot_values[row][column] = peak
         ordered = sorted(representatives)
         for left, right in zip(ordered, ordered[1:]):
-            _draw_braille_line(bits, columns, rows, left,
-                               representatives[left], right,
-                               representatives[right])
+            _draw_braille_line(
+                bits, columns, rows, left, representatives[left],
+                right, representatives[right], dot_values=dot_values,
+                high_value=max(rep_values[left], rep_values[right]))
 
         clock = lambda stamp: format_tick(stamp, window, start)
-        axis = (f'min {real_low:.1f}{unit}  max {real_high:.1f}{unit}  '
-                f'{clock(start)}→{clock(end)}')
         grid = []
+        axis_parts = [
+            (f'min {real_low:.1f}{unit}',
+             value_level(real_low, warn_at, critical_at)),
+            (f'  max {real_high:.1f}{unit}',
+             value_level(real_high, warn_at, critical_at)),
+            (f'  {clock(start)}→{clock(end)}', 'normal'),
+        ]
         for char_row in range(plot_h):
-            line = []
+            cells = []
             for char_col in range(plot_w):
                 mask = 0
+                peak = None
                 for dot_col in (0, 1):
                     for dot_row in range(4):
-                        if bits[char_row * 4 + dot_row][char_col * 2 + dot_col]:
+                        subpixel = dot_values[char_row * 4 + dot_row][
+                            char_col * 2 + dot_col]
+                        if subpixel is not None:
                             mask |= 1 << (dot_row + 4 * dot_col)
-                line.append(chr(BRAILLE_BASE + mask) if mask else ' ')
-            grid.append(line)
+                            if peak is None or subpixel > peak:
+                                peak = subpixel
+                cells.append((chr(BRAILLE_BASE + mask) if mask else ' ',
+                              value_level(peak, warn_at, critical_at)))
+            grid.append(cells)
 
-    lines = [header]
-    for index, row in enumerate(grid):
+    for index, cells in enumerate(grid):
         y_label = '┤' if index == plot_h // 2 else '│'
-        lines.append(_fit(y_label + ''.join(row), width))
-    lines.append(_fit(_tick_row(start, end, width), width))
-    lines.append(_fit(axis, width))
+        plot_parts.append(_fit_segments(
+            [(y_label, 'normal')] + cells, width))
+
+    lines = [_fit_segments(header_parts, width)]
+    lines.extend(plot_parts)
+    lines.append(_coalesce_segments([(_fit(_tick_row(start, end, width),
+                                          width), 'normal')]))
+    lines.append(_fit_segments(axis_parts, width))
     return lines
+
+
+def render_graph(samples, width=48, height=6, *, title='', unit='',
+                 current=None, window_s=None, now=None, nonnegative=False,
+                 warn_at=None, critical_at=None):
+    """Render a time series as labelled, thin braille lines.
+
+    Returns a list of strings: a header (title, current value, adaptive time
+    window), ``height`` plot rows (2 x 4 braille subpixels per cell), an x-axis
+    row with several tick labels and a footer with min / max and the time span.
+    Pure: no curses, no I/O, no exceptions on bad input.  The text is exactly
+    the plain-text projection of :func:`render_graph_segments`; thresholds only
+    affect the segmented output consumed by the TUI.
+    """
+    lines = render_graph_segments(
+        samples, width, height, title=title, unit=unit, current=current,
+        window_s=window_s, now=now, nonnegative=nonnegative,
+        warn_at=warn_at, critical_at=critical_at)
+    return [''.join(chunk for chunk, _level in line) for line in lines]

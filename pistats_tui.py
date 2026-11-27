@@ -40,6 +40,16 @@ except ImportError:  # pragma: no cover - only when run outside the repo
 TABS = ['Overview', 'Temperature', 'Performance', 'Battery', 'Config']
 DEFAULT_RENDER_INTERVAL_S = 1.0
 
+
+def _config_number(cfg, key, default):
+    """Read a finite non-negative number from a config dict with a fallback."""
+    try:
+        value = float(cfg.get(key, default))
+    except (AttributeError, TypeError, ValueError):
+        return float(default)
+    return value if value >= 0 and math.isfinite(value) else float(default)
+
+
 KEY_BINDINGS = {
     '?': 'commands',
     '/': 'commands',
@@ -1075,6 +1085,40 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
         _put(y, text_x, text, text_max, attr)
         _put(y, right_x, right, 1, _style('frame'))
 
+    def _lined_segments(y, segments):
+        """Draw a bordered row from ``(text, level)`` chunks.
+
+        Clipping is identical to :func:`_lined`: the visible text is the same
+        ``_clip`` result, but warm / hot chunks carry their graph attribute.
+        Each chunk is written once, in order, with no overlapping columns.
+        """
+        if not (0 <= y < height):
+            return
+        shown = _clip(''.join(text for text, _level in segments), text_max)
+        shown = shown.ljust(text_max)
+        levels = []
+        for text, level in segments:
+            levels.extend([level] * len(text))
+        if not levels:
+            levels = ['normal']
+        pieces = []
+        for index, char in enumerate(shown):
+            # _fit/_clip may replace the last visible char with an ellipsis;
+            # keep the level of the character it replaced.
+            level = (levels[min(index, len(levels) - 1)]
+                     if index < len(levels) else 'normal')
+            if pieces and pieces[-1][1] == level:
+                pieces[-1] = (pieces[-1][0] + char, level)
+            else:
+                pieces.append((char, level))
+        _put(y, 0, '║', 1, _style('frame'))
+        x = text_x
+        for text, level in pieces:
+            _put(y, x, text, len(text),
+                 _style('value') if level == 'normal' else _graph_style(level))
+            x += len(text)
+        _put(y, right_x, '║', 1, _style('frame'))
+
     def _separator(y):
         if 0 <= y < height:
             _put(y, 0, '╟' + '─' * max(0, width - 3) + '╢', width - 1,
@@ -1253,16 +1297,29 @@ def _render(stdscr, state, rows, cfg, filtered=None, status=''):
                 return
             last_stamp, last_value = _sample_parts(samples[-1]) if samples else (
                 None, None)
-            lines = _dashboard.render_graph(
+            if unit == '°C':
+                # Pi 5 thermal throttle points, fixed by hardware.
+                warn_at = _dashboard.TEMP_WARN_C if _dashboard else 80.0
+                critical_at = _dashboard.TEMP_CRITICAL_C if _dashboard else 85.0
+            else:
+                defaults = (_config.DEFAULT_CONFIG if _config else
+                            {'power_warn_w': 15.0, 'power_critical_w': 25.0})
+                warn_at = _config_number(
+                    cfg, 'power_warn_w', defaults.get('power_warn_w', 15.0))
+                critical_at = _config_number(
+                    cfg, 'power_critical_w',
+                    defaults.get('power_critical_w', 25.0))
+            lines = _dashboard.render_graph_segments(
                 samples, width=text_max - 1, height=plot_h,
                 title=label, unit=unit,
                 current=last_value,
                 now=(state.get('session_now') or last_stamp),
-                nonnegative=(unit == 'W'))
-            for line in lines:
+                nonnegative=(unit == 'W'),
+                warn_at=warn_at, critical_at=critical_at)
+            for segments in lines:
                 if cursor >= bottom:
                     break
-                _lined(cursor, line, _style('value'))
+                _lined_segments(cursor, segments)
                 cursor += 1
             drawn.add(identifier)
 
@@ -1376,10 +1433,35 @@ _THEME_COLORS = (
     ('good', 'COLOR_WHITE'),
     ('warn', 'COLOR_YELLOW'),
     ('critical', 'COLOR_RED'),
+    # Graph throttle zones: orange when the terminal allows a custom colour,
+    # yellow otherwise; red is unchanged from the semantic critical role.
+    ('graph_warn', 'COLOR_YELLOW'),
+    ('graph_critical', 'COLOR_RED'),
     ('bar', 'COLOR_YELLOW'),
     ('selected', 'COLOR_GREEN'),
 )
+# curses has no standard orange: define colour 8 when the terminal supports
+# redefining colours, with yellow as the documented fallback.
+CUSTOM_ORANGE_COLOR = 8
+CUSTOM_ORANGE_RGB = (1000, 550, 0)  # curses RGB components are 0..1000
 _COLOR_ATTRS = {}
+
+
+def _orange_color():
+    """Return the custom orange colour id, or the yellow fallback (or None)."""
+    fallback = getattr(_curses, 'COLOR_YELLOW', None)
+    try:
+        can_change = getattr(_curses, 'can_change_color', None)
+        init_color = getattr(_curses, 'init_color', None)
+        colors = getattr(_curses, 'COLORS', 0)
+        if (callable(can_change) and callable(init_color) and can_change()
+                and isinstance(colors, int)
+                and colors > CUSTOM_ORANGE_COLOR):
+            init_color(CUSTOM_ORANGE_COLOR, *CUSTOM_ORANGE_RGB)
+            return CUSTOM_ORANGE_COLOR
+    except Exception:  # pragma: no cover - terminal refuses the redefinition
+        pass
+    return fallback
 
 
 def _init_colors():
@@ -1392,8 +1474,10 @@ def _init_colors():
             _curses.use_default_colors()
         except Exception:  # pragma: no cover - older curses implementations
             pass
+        orange = _orange_color()
         for pair, (name, color_name) in enumerate(_THEME_COLORS, start=1):
-            color = getattr(_curses, color_name, None)
+            color = orange if (name == 'graph_warn' and orange is not None) \
+                else getattr(_curses, color_name, None)
             if color is None:
                 continue
             _curses.init_pair(pair, color, -1)
@@ -1408,6 +1492,18 @@ def _style(name, bold=False):
     if bold and _curses is not None:
         attr |= getattr(_curses, 'A_BOLD', 0)
     return attr
+
+
+_GRAPH_LEVEL_ROLE = {
+    'normal': 'value',
+    'warn': 'graph_warn',
+    'critical': 'graph_critical',
+}
+
+
+def _graph_style(level):
+    """Attribute for a semantic graph level (plain when colour is absent)."""
+    return _style(_GRAPH_LEVEL_ROLE.get(level, 'value'))
 
 
 def _selected_style():

@@ -36,7 +36,15 @@ header shows the actual window (`last 47s`, `last 12m`, `last 3h`, `last 6d`).
 Several time ticks run along the x axis (with dates whenever the span crosses a
 day), and min/max values with units sit below the plot. Recent samples stay at
 1 Hz while older ones are folded into one-minute min/max/average buckets, so
-spikes survive downsampling and days or weeks of history stay affordable. Very
+spikes survive downsampling and days or weeks of history stay affordable.
+
+Each plotted cell, the `now` value and the min/max labels are coloured by the
+value they represent: normal is the default neutral colour, **orange** starts
+at the Pi 5 soft-throttle point (**80 °C** / **15 W**) and **red** at the
+hard-throttle point (**85 °C** / **25 W**); thresholds are inclusive (`>=`),
+and a cell takes the colour of its highest reading so short spikes stay visible.
+Curses has no standard orange, so terminals that allow colour redefinition get
+a custom orange and everything else falls back to yellow. Very
 short terminals fall back to a compact one-line braille trend. No extra
 packages are required: the dashboard uses only the Python standard library
 (`curses`), so it works over SSH.
@@ -149,6 +157,12 @@ All settings live in `~/.config/pistats/config.json` (override the path with
 | `wall_factor` | `1.0` | PMIC → wall power multiplier |
 | `wall_slope`, `wall_intercept` | `1.0`, `0.0` | Optional wall calibration |
 | `energy_windows_min` | `[60, 120]` | Energy windows in minutes |
+| `power_warn_w` | `15.0` | Power graph warn / soft-throttle threshold in W (orange) |
+| `power_critical_w` | `25.0` | Power graph critical / hard-throttle threshold in W (red) |
+
+The temperature thresholds are fixed hardware points (80 °C soft, 85 °C hard)
+and are documented in `pistats_dashboard.py`; the power thresholds above are
+editable like any other config key.
 
 ### Sampling sub-view (Config tab)
 
